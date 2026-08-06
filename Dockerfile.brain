@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+COPY fixtures ./fixtures
+RUN pip install --no-cache-dir .
+
+ENV SPRUCER_HOST=0.0.0.0
+ENV SPRUCER_PORT=8787
+ENV SPRUCER_DATABASE_URL=sqlite:////data/sprucer.db
+
+EXPOSE 8787
+CMD ["sprucer-brain"]

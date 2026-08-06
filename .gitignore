@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+src/sprucer/**/__pycache__/
+
+# Node
+web/node_modules/
+web/.next/
+web/out/
+web/.turbo/
+
+# Runtime / local
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+data/
+.sprucer/
+.npm-cache/
+web/.npm-cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Secrets / real operator data (never commit)
+career-truth.json
+!fixtures/**/career-truth.json

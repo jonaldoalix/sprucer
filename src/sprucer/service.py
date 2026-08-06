@@ -1,0 +1,468 @@
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+
+from sprucer.adapters.llm import LlmAdapter
+from sprucer.adapters.storage.sqlalchemy_store import SqlAlchemyStorage
+
+ARTIFACT_TYPES = ("cover", "resume", "email", "interview", "linkedin")
+LIST_SECTIONS = {
+    "signatureStories",
+    "blurbs",
+    "metrics",
+    "experience",
+    "projects",
+    "neverClaim",
+}
+
+
+def _now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _slug(text: str, *, fallback: str = "role") -> str:
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").strip().lower()).strip("-")
+    return (s[:48] or fallback)
+
+
+def _ensure_item_id(item: dict[str, Any], *, prefix: str) -> dict[str, Any]:
+    out = dict(item)
+    if not out.get("id"):
+        out["id"] = f"{prefix}-{uuid.uuid4().hex[:8]}"
+    return out
+
+
+def _strip_html(raw: str) -> str:
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _clean_jd_text(text: str) -> str:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()[:24000]
+
+
+def _guess_fields(jd_text: str, *, url: str = "", hints: dict[str, str] | None = None) -> dict[str, str]:
+    hints = hints or {}
+    lines = [ln.strip() for ln in jd_text.splitlines() if ln.strip()]
+    title = hints.get("title") or (lines[0][:120] if lines else "")
+    company = hints.get("company") or ""
+    location = hints.get("location") or ""
+    if not company:
+        for ln in lines[:8]:
+            if re.search(r"\b(inc|llc|corp|company|labs|cloud)\b", ln, re.I) and len(ln) < 80:
+                company = ln
+                break
+    if not location:
+        for ln in lines[:12]:
+            if re.search(r"\b(remote|hybrid|on-?site|,\s*[A-Z]{2})\b", ln, re.I):
+                location = ln[:120]
+                break
+    return {"title": title, "company": company, "location": location, "url": url}
+
+
+class CareerService:
+    def __init__(self, store: SqlAlchemyStorage, llm: LlmAdapter) -> None:
+        self.store = store
+        self.llm = llm
+
+    def truth_get(self) -> dict[str, Any]:
+        truth = self.store.get_truth()
+        counts = {
+            "experience": len(truth.get("experience") or []),
+            "projects": len(truth.get("projects") or []),
+            "metrics": len(truth.get("metrics") or []),
+            "blurbs": len(truth.get("blurbs") or []),
+            "signatureStories": len(truth.get("signatureStories") or []),
+            "neverClaim": len(truth.get("neverClaim") or []),
+        }
+        return {"ok": True, "truth": truth, "counts": counts}
+
+    def truth_patch(
+        self,
+        *,
+        op: str,
+        section: str,
+        item: dict[str, Any] | None = None,
+        item_id: str | None = None,
+        index: int | None = None,
+        value: Any = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        op = (op or "").strip().lower()
+        truth = self.store.get_truth()
+        if op == "set":
+            truth[section] = value
+        elif op == "add":
+            if section not in LIST_SECTIONS:
+                raise RuntimeError(f"section must be one of {sorted(LIST_SECTIONS)}")
+            if section == "neverClaim":
+                text = ""
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("body") or "")
+                elif isinstance(item, str):
+                    text = item
+                if not text.strip():
+                    raise RuntimeError("neverClaim add requires text")
+                lst = list(truth.get(section) or [])
+                lst.append(text.strip())
+                truth[section] = lst
+            else:
+                if not isinstance(item, dict):
+                    raise RuntimeError("item object required")
+                prefix = {
+                    "signatureStories": "story",
+                    "blurbs": "blurb",
+                    "metrics": "metric",
+                    "experience": "exp",
+                    "projects": "proj",
+                }[section]
+                lst = list(truth.get(section) or [])
+                lst.append(_ensure_item_id(item, prefix=prefix))
+                truth[section] = lst
+        elif op == "update":
+            if section not in LIST_SECTIONS or section == "neverClaim":
+                raise RuntimeError("update supports object list sections only")
+            if not isinstance(item, dict):
+                raise RuntimeError("item object required")
+            lst = list(truth.get(section) or [])
+            target = None
+            if item_id:
+                for i, existing in enumerate(lst):
+                    if isinstance(existing, dict) and existing.get("id") == item_id:
+                        target = i
+                        break
+            elif index is not None:
+                target = index
+            if target is None or target < 0 or target >= len(lst):
+                raise RuntimeError("item not found")
+            merged = dict(lst[target])
+            merged.update(item)
+            lst[target] = merged
+            truth[section] = lst
+        elif op == "remove":
+            if not confirm:
+                raise RuntimeError("confirm=true is required to remove")
+            if section == "neverClaim":
+                lst = list(truth.get(section) or [])
+                if index is None or index < 0 or index >= len(lst):
+                    raise RuntimeError("index required for neverClaim remove")
+                lst.pop(index)
+                truth[section] = lst
+            else:
+                lst = list(truth.get(section) or [])
+                if item_id:
+                    lst = [x for x in lst if not (isinstance(x, dict) and x.get("id") == item_id)]
+                elif index is not None:
+                    lst.pop(index)
+                else:
+                    raise RuntimeError("item_id or index required")
+                truth[section] = lst
+        else:
+            raise RuntimeError("op must be add|update|remove|set")
+        saved = self.store.save_truth(truth)
+        return {"ok": True, "truth": saved}
+
+    def applications_list(self) -> dict[str, Any]:
+        return {"ok": True, "items": self.store.list_applications()}
+
+    def applications_get(self, application_id: str) -> dict[str, Any]:
+        app = self.store.get_application(application_id)
+        if app is None:
+            raise RuntimeError(f"Application not found: {application_id}")
+        return {"ok": True, "application": app}
+
+    def applications_upsert(self, body: dict[str, Any]) -> dict[str, Any]:
+        app_id = (body.get("id") or body.get("application_id") or "").strip()
+        if not app_id:
+            raise RuntimeError("id is required")
+        existing = self.store.get_application(app_id) or {"id": app_id, "generations": []}
+        for key in ("company", "title", "location", "url", "status", "notes"):
+            if key in body and body[key] is not None:
+                existing[key] = body[key]
+        saved = self.store.upsert_application(existing)
+        return {"ok": True, "application": saved}
+
+    def applications_delete(self, application_id: str, *, confirm: bool = False) -> dict[str, Any]:
+        if not confirm:
+            raise RuntimeError("confirm=true is required to delete an application")
+        try:
+            self.store.delete_application(application_id)
+        except KeyError as exc:
+            raise RuntimeError(f"Application not found: {application_id}") from exc
+        return {"ok": True, "deleted": application_id}
+
+    async def jd_ingest(
+        self,
+        *,
+        source_type: str,
+        text: str | None = None,
+        url: str | None = None,
+        filename: str | None = None,
+        content_base64: str | None = None,
+        application_id: str | None = None,
+    ) -> dict[str, Any]:
+        import base64
+
+        source_type = (source_type or "").strip().lower()
+        if source_type not in {"paste", "url", "upload"}:
+            raise RuntimeError("source_type must be paste|url|upload")
+
+        jd_text = ""
+        source_filename = filename or ""
+        hints: dict[str, str] = {}
+
+        if source_type == "paste":
+            jd_text = (text or "").strip()
+            if not jd_text:
+                raise RuntimeError("text is required for paste")
+        elif source_type == "url":
+            if not (url or "").strip():
+                raise RuntimeError("url is required for url ingest")
+            jd_text, hints = await self._fetch_url_text(url.strip())
+        else:
+            if not content_base64:
+                raise RuntimeError("content_base64 is required for upload")
+            raw = base64.b64decode(content_base64)
+            source_filename = filename or "upload.bin"
+            lower = source_filename.lower()
+            if lower.endswith((".html", ".htm")):
+                jd_text = _strip_html(raw.decode("utf-8", errors="replace"))
+            else:
+                jd_text = raw.decode("utf-8", errors="replace")
+
+        jd_text = _clean_jd_text(jd_text)
+        fields = _guess_fields(jd_text, url=url or "", hints=hints)
+        day = datetime.now(tz=timezone.utc).strftime("%Y%m%d")
+
+        if application_id and application_id.strip():
+            app_id = application_id.strip()
+        else:
+            app_id = ""
+            want_url = (url or "").strip().split("#")[0]
+            if want_url:
+                for prev in self.store.list_applications():
+                    if str(prev.get("url") or "").split("#")[0] == want_url:
+                        app_id = str(prev["id"])
+                        break
+            if not app_id:
+                app_id = f"{day}-{_slug(fields['company'] or 'company')}-{_slug(fields['title'] or 'role')}"
+                base = app_id
+                n = 2
+                while self.store.get_application(app_id) is not None:
+                    app_id = f"{base}-{n}"
+                    n += 1
+
+        existing = self.store.get_application(app_id)
+        sha = hashlib.sha256(jd_text.encode("utf-8", errors="replace")).hexdigest()
+        meta = {
+            "id": app_id,
+            "company": fields["company"],
+            "title": fields["title"],
+            "location": fields["location"],
+            "url": (url or "").strip(),
+            "sourceType": source_type,
+            "sourceFilename": source_filename,
+            "sourceSha256": sha,
+            "status": (existing or {}).get("status") or "draft",
+            "notes": (existing or {}).get("notes") or "",
+        }
+        if existing:
+            for key in ("company", "title", "location", "url"):
+                if existing.get(key) and not meta.get(key):
+                    meta[key] = existing[key]
+        saved = self.store.upsert_application(meta, jd_text=jd_text)
+        return {"ok": True, "application": saved, "jdChars": len(jd_text)}
+
+    async def _fetch_url_text(self, fetch_url: str) -> tuple[str, dict[str, str]]:
+        headers = {"User-Agent": "Sprucer/0.1 (+https://github.com/Full-Stack-Boston/sprucer)"}
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, trust_env=False) as client:
+            try:
+                res = await client.get(fetch_url, headers=headers)
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"URL fetch failed: {exc}") from exc
+            if res.status_code in {401, 403}:
+                raise RuntimeError(
+                    f"Job site returned HTTP {res.status_code}. Paste the JD text or upload a file instead."
+                )
+            if res.status_code >= 400:
+                raise RuntimeError(f"URL fetch HTTP {res.status_code}")
+            ctype = (res.headers.get("content-type") or "").lower()
+            body = res.text
+            if "html" in ctype or "<html" in body[:500].lower():
+                return _clean_jd_text(_strip_html(body)), {}
+            return _clean_jd_text(body), {}
+
+    def _normalize_types(self, types: list[str] | None, custom_type: str | None) -> list[str]:
+        out: list[str] = []
+        for t in types or []:
+            t = (t or "").strip().lower()
+            if not t:
+                continue
+            if t in ARTIFACT_TYPES or t.startswith("custom:"):
+                out.append(t)
+            else:
+                out.append(f"custom:{t}")
+        if custom_type and custom_type.strip():
+            key = f"custom:{_slug(custom_type.strip(), fallback='request')}"
+            if key not in out:
+                out.append(key)
+        if not out:
+            raise RuntimeError(
+                f"Provide at least one artifact type (one of {ARTIFACT_TYPES}) or custom_type"
+            )
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for t in out:
+            if t not in seen:
+                seen.add(t)
+                uniq.append(t)
+        return uniq
+
+    def _emphasis_hint(self, truth: dict[str, Any], jd_text: str) -> list[dict[str, str]]:
+        blob = jd_text.lower()
+        plan: list[dict[str, str]] = []
+        for m in truth.get("metrics") or []:
+            if not isinstance(m, dict):
+                continue
+            tags = " ".join(m.get("tags") or []).lower()
+            text = (m.get("text") or "").lower()
+            score = sum(1 for w in re.findall(r"[a-z0-9]{4,}", tags + " " + text) if w in blob)
+            if score:
+                plan.append(
+                    {
+                        "id": m.get("id") or "",
+                        "reason": f"metric overlap score {score}",
+                        "text": m.get("text") or "",
+                    }
+                )
+        for blurb in truth.get("blurbs") or []:
+            if not isinstance(blurb, dict):
+                continue
+            hay = " ".join(
+                [
+                    " ".join(blurb.get("tags") or []),
+                    blurb.get("text") or "",
+                    blurb.get("label") or "",
+                ]
+            ).lower()
+            score = sum(1 for w in re.findall(r"[a-z0-9]{4,}", hay) if w in blob)
+            if score:
+                plan.append(
+                    {
+                        "id": blurb.get("id") or "",
+                        "reason": f"blurb overlap score {score}",
+                        "text": blurb.get("text") or "",
+                    }
+                )
+        plan.insert(
+            0,
+            {
+                "id": "roleSpectrum",
+                "reason": "operator prefers spectrum fit over title match",
+                "text": (truth.get("roleSpectrum") or {}).get("summary") or "",
+            },
+        )
+        return plan[:16]
+
+    async def generate(
+        self,
+        *,
+        application_id: str,
+        types: list[str] | None = None,
+        custom_type: str | None = None,
+    ) -> dict[str, Any]:
+        app = self.store.get_application(application_id)
+        if app is None:
+            raise RuntimeError(f"Application not found: {application_id}")
+        jd_text = self.store.get_jd(application_id)
+        if not jd_text.strip():
+            raise RuntimeError("JD missing; ingest a job description first")
+        truth = self.store.get_truth()
+        artifact_types = self._normalize_types(types, custom_type)
+        emphasis = self._emphasis_hint(truth, jd_text)
+
+        system = (
+            "You write tailored job-application materials grounded ONLY in the provided "
+            "career truth JSON and job description. Never invent employers, dates, degrees, "
+            "or metrics. Never use em dashes or fancy punctuation; keyboard characters only. "
+            "Respect neverClaim. Choose strengths and superlatives dynamically for this JD; "
+            "cite which truth metric/experience ids you used in an Emphasis section. "
+            "Voice: professional, not bland, first person. "
+            "Return Markdown with a clear heading per requested artifact type."
+        )
+        user = {
+            "application": {
+                "id": app.get("id"),
+                "company": app.get("company"),
+                "title": app.get("title"),
+                "location": app.get("location"),
+                "url": app.get("url"),
+            },
+            "artifactTypes": artifact_types,
+            "emphasisPlanHint": emphasis,
+            "careerTruth": truth,
+            "jobDescription": jd_text[:24000],
+        }
+        content = await self.llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=True)},
+            ]
+        )
+
+        gen_id = f"gen-{uuid.uuid4().hex[:10]}"
+        body = (
+            f"<!-- generation_id={gen_id} approval=draft types={','.join(artifact_types)} -->\n\n"
+            f"# Generation {gen_id}\n\n"
+            f"Application: {app.get('company') or ''} — {app.get('title') or ''}\n\n"
+            f"## Emphasis plan (pre-model hint)\n\n"
+            + "\n".join(f"- `{e.get('id')}`: {e.get('reason')} — {e.get('text')}" for e in emphasis)
+            + "\n\n---\n\n"
+            + content.strip()
+            + "\n"
+        )
+        sidecar = {
+            "id": gen_id,
+            "types": artifact_types,
+            "emphasisPlan": emphasis,
+            "approval": "draft",
+        }
+        saved = self.store.save_generation(application_id, generation=sidecar, content=body)
+        return {
+            "ok": True,
+            "application_id": application_id,
+            "generation": saved,
+            "preview": body[:800],
+        }
+
+    def generation_approve(
+        self, *, application_id: str, generation_id: str, confirm: bool = False
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise RuntimeError("confirm=true is required to approve a generation")
+        try:
+            found = self.store.approve_generation(application_id, generation_id)
+        except KeyError as exc:
+            raise RuntimeError(f"generation not found: {generation_id}") from exc
+        return {"ok": True, "generation": found, "application_id": application_id}
+
+    def generation_get(self, *, application_id: str, generation_id: str) -> dict[str, Any]:
+        found = self.store.get_generation(application_id, generation_id)
+        if found is None:
+            raise RuntimeError(f"generation not found: {generation_id}")
+        return {"ok": True, "generation": found, "content": found.get("content") or ""}

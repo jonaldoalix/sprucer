@@ -1,0 +1,20 @@
+Senior Platform Engineer
+Acme Cloud — Remote (US)
+
+Acme Cloud builds observability tooling for mid-size SaaS teams. We are hiring a Senior Platform Engineer to own CI/CD, developer experience, and reliability for our control plane.
+
+Responsibilities:
+- Maintain and improve deploy pipelines for a multi-service Python/TypeScript stack
+- Partner with product engineers on incident response and runbooks
+- Reduce time from pull request to production without sacrificing safety
+- Mentor peers on operational ownership
+
+Requirements:
+- 5+ years building and operating production services
+- Strong Linux, containers, and CI experience
+- Comfortable with Postgres and API services
+- Clear written communication
+
+Nice to have:
+- Open-source contributions
+- Experience with on-call coaching

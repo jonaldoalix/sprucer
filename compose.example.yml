@@ -1,0 +1,34 @@
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: Dockerfile.brain
+    ports:
+      - "8787:8787"
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_PORT: "8787"
+      SPRUCER_DATABASE_URL: "sqlite:////data/sprucer.db"
+      SPRUCER_AUTH_MODE: "dev"
+      SPRUCER_DEV_PASSWORD: "sprucer-dev"
+      SPRUCER_LLM_URL: "${SPRUCER_LLM_URL:-http://host.docker.internal:4000/v1}"
+      SPRUCER_LLM_API_KEY: "${SPRUCER_LLM_API_KEY:-sk-change-me}"
+      SPRUCER_LLM_MODEL: "${SPRUCER_LLM_MODEL:-qwen-coder}"
+    volumes:
+      - sprucer-data:/data
+    # For Postgres instead of SQLite, set SPRUCER_DATABASE_URL and add a db service.
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3737:3737"
+    environment:
+      NEXT_PUBLIC_SPRUCER_API_URL: "http://127.0.0.1:8787"
+      SPRUCER_PUBLIC_URL: "http://brain:8787"
+    depends_on:
+      - brain
+
+volumes:
+  sprucer-data:

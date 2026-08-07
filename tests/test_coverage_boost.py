@@ -139,8 +139,10 @@ def test_none_api_key_dev_oidc_auth_paths():
         keys.authenticate(_request())
     with pytest.raises(Exception):
         keys.authenticate(_request(headers={"Authorization": "Bearer bad"}))
-    assert keys.authenticate(_request(headers={"Authorization": "Bearer good"})).subject == "api-key"
-    assert keys.login(resp, api_key="good").subject == "api-key"
+    assert keys.authenticate(_request(headers={"Authorization": "Bearer good"})).subject.startswith(
+        "api-key:"
+    )
+    assert keys.login(resp, api_key="good").subject.startswith("api-key:")
     assert keys.logout(resp) is None
     assert keys.public_config()["api_key"] is True
 
@@ -177,7 +179,7 @@ def test_none_api_key_dev_oidc_auth_paths():
     assert oidc.authenticate(req2).subject == "user-z"
     with pytest.raises(Exception):
         oidc.authenticate(_request())
-    assert oidc.login(resp, api_key="ak").subject == "api-key"
+    assert oidc.login(resp, api_key="ak").subject.startswith("api-key:")
     with pytest.raises(Exception):
         oidc.login(resp)
     oidc.logout(resp)

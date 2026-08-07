@@ -22,4 +22,4 @@ All compose files are heavily commented — YAML `#` comments are intentional do
 
 - `SPRUCER_AUTH_MODE=dev` is for trusted networks only. Containers bind `0.0.0.0`, so local compose sets `SPRUCER_ALLOW_INSECURE_DEV=1` deliberately.
 - Prefer `oidc` (or `api_key`) for anything reachable beyond your laptop.
-- Sprucer is **single-tenant** today: one vault per database.
+- With auth enabled, each identity gets its own vault; `auth_mode=none` is one shared vault per database.

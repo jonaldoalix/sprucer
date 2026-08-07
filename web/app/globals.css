@@ -173,6 +173,32 @@ button {
   background: var(--accent);
 }
 
+.nav-auth-btn {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 180ms ease, color 180ms ease;
+}
+
+.nav-auth-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-lift));
+  color: var(--ink);
+  transform: none;
+  filter: none;
+}
+
+.nav-auth-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .main {
   width: min(1180px, 100%);
   margin: 0 auto;
@@ -770,6 +796,16 @@ button {
 .error {
   color: var(--danger);
   margin: 0.5rem 0;
+}
+
+.auth-splash {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 36rem;
+}
+
+.auth-splash-panel {
+  max-width: 28rem;
 }
 
 .markdown {

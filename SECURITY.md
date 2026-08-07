@@ -6,9 +6,9 @@ Sprucer is alpha (`0.1.x`). Security fixes land on `main`.
 
 ## Threat model (honest)
 
-- **Intended:** single-operator career desk; drafts until you approve; local Docker or private network.
-- **Not intended (yet):** multi-tenant SaaS, untrusted multi-user vaults, public anonymous generate APIs.
-- OIDC authenticates a subject but **does not isolate data** — one database = one vault.
+- **Intended:** single-operator career desk or small authenticated deployments; drafts until you approve; local Docker or private network.
+- **Not intended (yet):** public anonymous generate APIs, or treating `auth_mode=none` as multi-user safety.
+- **Tenancy:** with auth enabled (`dev` / `oidc` / `api_key`), truth and applications are scoped per identity. With `auth_mode=none`, the deploy uses one shared vault.
 
 ## Hardening already in place
 

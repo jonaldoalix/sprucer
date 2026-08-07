@@ -9,6 +9,7 @@ from typing import Protocol
 from fastapi import HTTPException, Request, Response
 
 from sprucer.adapters.oidc import OidcClient, sign_session, verify_session
+from sprucer.tenancy import api_key_subject
 
 
 @dataclass
@@ -107,12 +108,12 @@ class ApiKeyAuth:
         token = auth.split(" ", 1)[1].strip()
         if token not in self.keys:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        return AuthContext(subject="api-key", mode=self.mode)
+        return AuthContext(subject=api_key_subject(token), mode=self.mode)
 
     def login(self, response: Response, *, password: str | None = None, api_key: str | None = None) -> AuthContext:
         if not api_key or api_key not in self.keys:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        return AuthContext(subject="api-key", mode=self.mode)
+        return AuthContext(subject=api_key_subject(api_key), mode=self.mode)
 
     def logout(self, response: Response) -> None:
         return None
@@ -157,7 +158,7 @@ class OidcAuth:
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1].strip()
             if token in self.api_keys:
-                return AuthContext(subject="api-key", mode="api_key")
+                return AuthContext(subject=api_key_subject(token), mode="api_key")
         cookie = request.cookies.get(self.cookie_name)
         if cookie:
             sub = verify_session(self.session_secret, cookie)
@@ -170,7 +171,7 @@ class OidcAuth:
 
     def login(self, response: Response, *, password: str | None = None, api_key: str | None = None) -> AuthContext:
         if api_key and api_key in self.api_keys:
-            return AuthContext(subject="api-key", mode="api_key")
+            return AuthContext(subject=api_key_subject(api_key), mode="api_key")
         raise HTTPException(status_code=400, detail="Use OIDC login (GET /v1/auth/oidc/start)")
 
     def logout(self, response: Response) -> None:

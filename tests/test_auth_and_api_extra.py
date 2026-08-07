@@ -42,7 +42,15 @@ def _app_client(tmp_path: Path, *, auth_mode: str = "dev", api_keys: set[str] | 
     settings = _settings(tmp_path, auth_mode=auth_mode, **kw)
     store = create_storage(settings.database_url)
     truth = json.loads((FIXTURES / "career-truth.json").read_text(encoding="utf-8"))
-    store.save_truth(truth)
+    from sprucer.tenancy import api_key_subject, vault_owner
+
+    if auth_mode == "api_key" and api_keys:
+        seed_subject = api_key_subject(sorted(api_keys)[0])
+    elif auth_mode == "dev":
+        seed_subject = "dev"
+    else:
+        seed_subject = "anonymous"
+    store.save_truth(truth, vault_owner(auth_mode=auth_mode, subject=seed_subject))
     llm = MockLlm()
     service = CareerService(store, llm)
     auth = create_auth(
@@ -90,6 +98,7 @@ def test_dev_rejects_raw_password_bearer(tmp_path: Path):
         assert login.status_code == 200
         who = client.get("/v1/auth/whoami")
         assert who.json()["subject"] == "dev"
+        assert who.json()["vault"] == "dev"
         assert client.post("/v1/auth/logout").status_code == 200
 
 

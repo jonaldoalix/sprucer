@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useId, useState } from "react";
 import { GenerationPreview } from "@/components/GenerationPreview";
+import { RequireAuth } from "@/components/RequireAuth";
 import { TrashIcon } from "@/components/TrashIcon";
 import { apiFetch } from "@/lib/api";
 
@@ -125,6 +126,14 @@ function formatDurationMs(ms?: number | null): string {
 }
 
 export default function ApplicationsPage() {
+  return (
+    <RequireAuth pageLabel="Applications">
+      <ApplicationsDesk />
+    </RequireAuth>
+  );
+}
+
+function ApplicationsDesk() {
   const formId = useId();
   const [items, setItems] = useState<AppRow[]>([]);
   const [selected, setSelected] = useState<AppDetail | null>(null);

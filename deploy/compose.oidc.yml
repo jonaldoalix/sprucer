@@ -12,7 +12,7 @@
 # - auth_mode=oidc (no shared password)
 # - SPRUCER_COOKIE_SECURE=1 assumes HTTPS in front (Caddy/Traefik/cloud LB)
 # - /docs disabled by default
-# - Still single-tenant: every OIDC subject shares one vault (by design today)
+# - Each OIDC subject (and each API key) gets an isolated vault
 
 services:
   db:

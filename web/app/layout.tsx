@@ -22,7 +22,7 @@ export const metadata: Metadata = {
   description: "Truth-first application materials desk",
 };
 
-const themeBootScript = `(function(){try{var t=localStorage.getItem("sprucer-theme");if(t==="light"||t==="neutral"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}else{document.documentElement.setAttribute("data-theme","light");}}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
+const themeBootScript = `(function(){try{var k="sprucer-theme";var t=localStorage.getItem(k);var pref=(t==="system"||t==="light"||t==="neutral"||t==="dark")?t:"system";var resolved=pref==="system"?(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):pref;document.documentElement.setAttribute("data-theme",resolved);document.documentElement.setAttribute("data-theme-pref",pref);}catch(e){document.documentElement.setAttribute("data-theme","light");document.documentElement.setAttribute("data-theme-pref","system");}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

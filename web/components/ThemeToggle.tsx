@@ -2,9 +2,13 @@
 
 import { useEffect, useState } from "react";
 
+/** Stored preference: explicit theme or follow OS. */
+export type ThemePreference = "system" | "light" | "neutral" | "dark";
+/** Resolved theme applied to <html data-theme>. */
 export type SprucerTheme = "light" | "neutral" | "dark";
 
-const THEMES: { id: SprucerTheme; label: string }[] = [
+const OPTIONS: { id: ThemePreference; label: string }[] = [
+  { id: "system", label: "System" },
   { id: "light", label: "Light" },
   { id: "neutral", label: "Neutral" },
   { id: "dark", label: "Dark" },
@@ -12,33 +16,62 @@ const THEMES: { id: SprucerTheme; label: string }[] = [
 
 const STORAGE_KEY = "sprucer-theme";
 
-function readTheme(): SprucerTheme {
-  if (typeof document === "undefined") return "light";
-  const attr = document.documentElement.getAttribute("data-theme");
-  if (attr === "neutral" || attr === "dark" || attr === "light") return attr;
-  return "light";
+function systemTheme(): SprucerTheme {
+  if (typeof window === "undefined") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(theme: SprucerTheme) {
-  document.documentElement.setAttribute("data-theme", theme);
+function resolveTheme(pref: ThemePreference): SprucerTheme {
+  return pref === "system" ? systemTheme() : pref;
+}
+
+function readPreference(): ThemePreference {
+  if (typeof document === "undefined") return "system";
   try {
-    localStorage.setItem(STORAGE_KEY, theme);
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "system" || stored === "light" || stored === "neutral" || stored === "dark") {
+      return stored;
+    }
+  } catch {
+    // ignore
+  }
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "neutral" || attr === "dark" || attr === "light") return attr;
+  return "system";
+}
+
+function applyPreference(pref: ThemePreference) {
+  const resolved = resolveTheme(pref);
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.documentElement.setAttribute("data-theme-pref", pref);
+  try {
+    localStorage.setItem(STORAGE_KEY, pref);
   } catch {
     // ignore private-mode / blocked storage
   }
 }
 
-/** Compact theme select — one control instead of three labels. */
+/** Compact theme select — System follows OS; choice persists in localStorage. */
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<SprucerTheme>("light");
+  const [pref, setPref] = useState<ThemePreference>("system");
 
   useEffect(() => {
-    setTheme(readTheme());
+    const current = readPreference();
+    setPref(current);
+    applyPreference(current);
+
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      const latest = readPreference();
+      if (latest === "system") applyPreference("system");
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  function onChange(next: SprucerTheme) {
-    setTheme(next);
-    applyTheme(next);
+  function onChange(next: ThemePreference) {
+    setPref(next);
+    applyPreference(next);
   }
 
   return (
@@ -46,11 +79,11 @@ export function ThemeToggle() {
       <span className="sr-only">Color theme</span>
       <select
         className="theme-select"
-        value={theme}
+        value={pref}
         aria-label="Color theme"
-        onChange={(e) => onChange(e.target.value as SprucerTheme)}
+        onChange={(e) => onChange(e.target.value as ThemePreference)}
       >
-        {THEMES.map((t) => (
+        {OPTIONS.map((t) => (
           <option key={t.id} value={t.id}>
             {t.label}
           </option>

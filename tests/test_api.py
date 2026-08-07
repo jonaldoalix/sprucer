@@ -33,7 +33,7 @@ def client(tmp_path: Path):
     )
     store = create_storage(settings.database_url)
     truth = json.loads((FIXTURES / "career-truth.json").read_text(encoding="utf-8"))
-    store.save_truth(truth)
+    store.save_truth(truth, owner="dev")
     llm = MockLlm()
     service = CareerService(store, llm)
     auth = create_auth(

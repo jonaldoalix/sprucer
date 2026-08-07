@@ -8,7 +8,7 @@
 - [ ] Confirm LICENSE copyright line
 - [ ] No lab hostnames / personal truth in history
 - [ ] Rate limits on login / generate (not yet)
-- [ ] Multi-tenant vault isolation (explicitly out of scope for alpha)
+- [x] Per-identity vaults when auth is on; shared vault when `auth_mode=none`
 
 ## Done recently
 

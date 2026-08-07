@@ -15,6 +15,7 @@ from sprucer.adapters.storage import create_storage
 from sprucer.security import validate_runtime_settings
 from sprucer.service import CareerService
 from sprucer.settings import Settings, get_settings
+from sprucer.tenancy import vault_owner
 
 
 class LoginBody(BaseModel):
@@ -122,6 +123,9 @@ def build_app(
     def require_auth(request: Request) -> AuthContext:
         return app.state.auth.authenticate(request)
 
+    def owner_for(ctx: AuthContext) -> str:
+        return vault_owner(auth_mode=app.state.auth.mode, subject=ctx.subject)
+
     def svc() -> CareerService:
         return app.state.service
 
@@ -145,7 +149,7 @@ def build_app(
 
     @app.get("/v1/auth/whoami")
     def whoami(ctx: AuthContext = Depends(require_auth)) -> dict[str, Any]:
-        return {"ok": True, "subject": ctx.subject, "mode": ctx.mode}
+        return {"ok": True, "subject": ctx.subject, "mode": ctx.mode, "vault": owner_for(ctx)}
 
     @app.get("/v1/auth/oidc/start")
     async def oidc_start(response: Response) -> RedirectResponse:
@@ -204,13 +208,13 @@ def build_app(
         return redirect
 
     @app.get("/v1/truth")
-    def truth_get(_: AuthContext = Depends(require_auth), service: CareerService = Depends(svc)):
-        return service.truth_get()
+    def truth_get(ctx: AuthContext = Depends(require_auth), service: CareerService = Depends(svc)):
+        return service.truth_get(owner=owner_for(ctx))
 
     @app.patch("/v1/truth")
     def truth_patch(
         payload: TruthPatchBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
@@ -225,33 +229,36 @@ def build_app(
                 index=payload.index,
                 value=payload.value,
                 confirm=payload.confirm,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/v1/applications")
-    def applications_list(_: AuthContext = Depends(require_auth), service: CareerService = Depends(svc)):
-        return service.applications_list()
+    def applications_list(ctx: AuthContext = Depends(require_auth), service: CareerService = Depends(svc)):
+        return service.applications_list(owner=owner_for(ctx))
 
     @app.get("/v1/applications/{application_id}")
     def applications_get(
         application_id: str,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
-            return service.applications_get(application_id)
+            return service.applications_get(application_id, owner=owner_for(ctx))
         except RuntimeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/v1/applications")
     def applications_upsert(
         payload: AppUpsertBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
-            return service.applications_upsert(payload.model_dump(exclude_none=True))
+            return service.applications_upsert(
+                payload.model_dump(exclude_none=True), owner=owner_for(ctx)
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -259,18 +266,20 @@ def build_app(
     def applications_delete(
         application_id: str,
         payload: ConfirmBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
-            return service.applications_delete(application_id, confirm=payload.confirm)
+            return service.applications_delete(
+                application_id, confirm=payload.confirm, owner=owner_for(ctx)
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/v1/jd/ingest")
     async def jd_ingest(
         payload: IngestBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
@@ -281,6 +290,7 @@ def build_app(
                 filename=payload.filename,
                 content_base64=payload.content_base64,
                 application_id=payload.application_id,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -288,7 +298,7 @@ def build_app(
     @app.post("/v1/generate")
     async def generate(
         payload: GenerateBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
@@ -296,6 +306,7 @@ def build_app(
                 application_id=payload.application_id,
                 types=payload.types,
                 custom_type=payload.custom_type,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -303,7 +314,7 @@ def build_app(
     @app.post("/v1/generations/approve")
     def generation_approve(
         payload: ApproveBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
@@ -311,6 +322,7 @@ def build_app(
                 application_id=payload.application_id,
                 generation_id=payload.generation_id,
                 confirm=payload.confirm,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -318,7 +330,7 @@ def build_app(
     @app.post("/v1/generations/delete")
     def generation_delete(
         payload: DeleteGenerationBody,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
@@ -326,6 +338,7 @@ def build_app(
                 application_id=payload.application_id,
                 generation_id=payload.generation_id,
                 confirm=payload.confirm,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -334,11 +347,15 @@ def build_app(
     def generation_get(
         application_id: str,
         generation_id: str,
-        _: AuthContext = Depends(require_auth),
+        ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
         try:
-            return service.generation_get(application_id=application_id, generation_id=generation_id)
+            return service.generation_get(
+                application_id=application_id,
+                generation_id=generation_id,
+                owner=owner_for(ctx),
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

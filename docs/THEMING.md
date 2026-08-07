@@ -8,11 +8,12 @@ Set `data-theme` on `<html>` (the topbar theme select does this and persists to 
 
 | Mode | Intent |
 |------|--------|
-| `light` | Spruce desk on pale paper (restore baseline) |
+| `system` | Follow OS light/dark (`prefers-color-scheme`); default until the user picks otherwise |
+| `light` | Spruce desk on pale paper |
 | `neutral` | Mid “lichen slate” sage-gray desk — not white, not black |
 | `dark` | Low-glare night desk; primary fills stay dark enough for light `--on-accent` text |
 
-Tag `restore-light-baseline` marks the pre-theme-experiment commit if you need to compare history (`git show restore-light-baseline`). Prefer branch/worktree workflows over resetting shared branches.
+Preference is stored in `localStorage` (`sprucer-theme`). Choosing **System** clears the forced theme and tracks the OS again. Tag `restore-light-baseline` marks the pre-theme-experiment commit if you need to compare history (`git show restore-light-baseline`).
 
 ## Quick rebrand
 

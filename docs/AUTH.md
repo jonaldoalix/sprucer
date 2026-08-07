@@ -34,7 +34,17 @@ SPRUCER_API_KEYS=optional-machine-key
 ```
 
 4. Open `/login` and use **Continue with SSO**.
+5. **Logout** clears the Sprucer session cookie only (`POST /v1/auth/logout`). It does not end the IdP SSO session — that stays with Authentik/Auth0/etc. until their own logout.
 
 Machine clients can still send `Authorization: Bearer <api-key>` when `SPRUCER_API_KEYS` is set.
 
-**Note:** OIDC subjects are not isolated into separate vaults yet — one database is one knowledge bank.
+**Tenancy:**
+
+- `SPRUCER_AUTH_MODE=none` → one shared vault for the deploy (`owner_subject=shared`).
+- Any other auth mode → truth and applications are scoped to the authenticated identity (`AuthContext.subject`).
+  - `dev` → subject `dev` (everyone with the shared password shares one vault)
+  - `oidc` → IdP `sub`
+  - `api_key` → `api-key:<sha256-prefix>` (each key is its own vault)
+
+Filesystem import / CLI seed into the shared vault by default. After enabling OIDC or API keys, re-import with the intended owner or migrate rows’ `owner_subject`.
+

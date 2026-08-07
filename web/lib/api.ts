@@ -35,6 +35,9 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
     );
   }
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("You need to log in to use this.");
+    }
     throw new Error(String(json.detail || json.error || `HTTP ${res.status}`));
   }
   return json;

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useId, useState } from "react";
+import { RequireAuth } from "@/components/RequireAuth";
 import { TrashIcon } from "@/components/TrashIcon";
 import { apiFetch } from "@/lib/api";
 
@@ -27,6 +28,14 @@ type Truth = {
 };
 
 export default function KnowledgePage() {
+  return (
+    <RequireAuth pageLabel="Knowledge">
+      <KnowledgeDesk />
+    </RequireAuth>
+  );
+}
+
+function KnowledgeDesk() {
   const formId = useId();
   const [truth, setTruth] = useState<Truth | null>(null);
   const [counts, setCounts] = useState<Record<string, number>>({});

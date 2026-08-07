@@ -65,10 +65,10 @@ def test_auth_classes_all_paths():
     for headers in ({}, {"Authorization": "Bearer bad"}):
         with pytest.raises(HTTPException):
             keys.authenticate(request(headers))
-    assert keys.authenticate(request({"Authorization": "Bearer a"})).subject == "api-key"
+    assert keys.authenticate(request({"Authorization": "Bearer a"})).subject.startswith("api-key:")
     with pytest.raises(HTTPException):
         keys.login(Response(), api_key="bad")
-    assert keys.login(Response(), api_key="a").subject == "api-key"
+    assert keys.login(Response(), api_key="a").subject.startswith("api-key:")
     assert keys.logout(Response()) is None
     assert keys.public_config()["api_key"]
 
@@ -83,7 +83,7 @@ def test_auth_classes_all_paths():
         oidc.authenticate(request())
     with pytest.raises(HTTPException):
         oidc.login(Response())
-    assert oidc.login(Response(), api_key="a").subject == "api-key"
+    assert oidc.login(Response(), api_key="a").subject.startswith("api-key:")
     assert oidc.establish_session(response, "person").subject == "person"
     session_cookie = response.headers.getlist("set-cookie")[-1].split("=", 1)[1].split(";", 1)[0]
     assert oidc.authenticate(request(cookies={oidc.cookie_name: session_cookie})).subject == "person"

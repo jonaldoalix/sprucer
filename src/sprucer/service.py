@@ -13,6 +13,7 @@ import httpx
 
 from sprucer.adapters.llm import LlmAdapter
 from sprucer.adapters.storage.sqlalchemy_store import SqlAlchemyStorage
+from sprucer.tenancy import SHARED_OWNER, owner_key
 
 ARTIFACT_TYPES = ("cover", "resume", "email", "interview", "linkedin")
 ARTIFACT_HEADINGS: dict[str, tuple[str, ...]] = {
@@ -88,8 +89,8 @@ class CareerService:
         self.store = store
         self.llm = llm
 
-    def truth_get(self) -> dict[str, Any]:
-        truth = self.store.get_truth()
+    def truth_get(self, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        truth = self.store.get_truth(owner)
         counts = {
             "experience": len(truth.get("experience") or []),
             "projects": len(truth.get("projects") or []),
@@ -110,9 +111,10 @@ class CareerService:
         index: int | None = None,
         value: Any = None,
         confirm: bool = False,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
         op = (op or "").strip().lower()
-        truth = self.store.get_truth()
+        truth = self.store.get_truth(owner)
         if op == "set":
             truth[section] = value
         elif op == "add":
@@ -182,34 +184,39 @@ class CareerService:
                 truth[section] = lst
         else:
             raise RuntimeError("op must be add|update|remove|set")
-        saved = self.store.save_truth(truth)
+        saved = self.store.save_truth(truth, owner)
         return {"ok": True, "truth": saved}
 
-    def applications_list(self) -> dict[str, Any]:
-        return {"ok": True, "items": self.store.list_applications()}
+    def applications_list(self, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        return {"ok": True, "items": self.store.list_applications(owner)}
 
-    def applications_get(self, application_id: str) -> dict[str, Any]:
-        app = self.store.get_application(application_id)
+    def applications_get(self, application_id: str, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        app = self.store.get_application(application_id, owner)
         if app is None:
             raise RuntimeError(f"Application not found: {application_id}")
         return {"ok": True, "application": app}
 
-    def applications_upsert(self, body: dict[str, Any]) -> dict[str, Any]:
+    def applications_upsert(self, body: dict[str, Any], *, owner: str = SHARED_OWNER) -> dict[str, Any]:
         app_id = (body.get("id") or body.get("application_id") or "").strip()
         if not app_id:
             raise RuntimeError("id is required")
-        existing = self.store.get_application(app_id) or {"id": app_id, "generations": []}
+        existing = self.store.get_application(app_id, owner) or {"id": app_id, "generations": []}
         for key in ("company", "title", "location", "url", "status", "notes"):
             if key in body and body[key] is not None:
                 existing[key] = body[key]
-        saved = self.store.upsert_application(existing)
+        try:
+            saved = self.store.upsert_application(existing, owner=owner)
+        except KeyError as exc:
+            raise RuntimeError(f"Application id conflicts with another vault: {app_id}") from exc
         return {"ok": True, "application": saved}
 
-    def applications_delete(self, application_id: str, *, confirm: bool = False) -> dict[str, Any]:
+    def applications_delete(
+        self, application_id: str, *, confirm: bool = False, owner: str = SHARED_OWNER
+    ) -> dict[str, Any]:
         if not confirm:
             raise RuntimeError("confirm=true is required to delete an application")
         try:
-            self.store.delete_application(application_id)
+            self.store.delete_application(application_id, owner)
         except KeyError as exc:
             raise RuntimeError(f"Application not found: {application_id}") from exc
         return {"ok": True, "deleted": application_id}
@@ -223,6 +230,7 @@ class CareerService:
         filename: str | None = None,
         content_base64: str | None = None,
         application_id: str | None = None,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
         import base64
 
@@ -256,6 +264,7 @@ class CareerService:
         jd_text = _clean_jd_text(jd_text)
         fields = _guess_fields(jd_text, url=url or "", hints=hints)
         day = datetime.now(tz=timezone.utc).strftime("%Y%m%d")
+        okey = owner_key(owner)
 
         if application_id and application_id.strip():
             app_id = application_id.strip()
@@ -263,19 +272,20 @@ class CareerService:
             app_id = ""
             want_url = (url or "").strip().split("#")[0]
             if want_url:
-                for prev in self.store.list_applications():
+                for prev in self.store.list_applications(owner):
                     if str(prev.get("url") or "").split("#")[0] == want_url:
                         app_id = str(prev["id"])
                         break
             if not app_id:
-                app_id = f"{day}-{_slug(fields['company'] or 'company')}-{_slug(fields['title'] or 'role')}"
+                stem = f"{day}-{_slug(fields['company'] or 'company')}-{_slug(fields['title'] or 'role')}"
+                app_id = f"{okey}-{stem}" if okey != "shared" else stem
                 base = app_id
                 n = 2
-                while self.store.get_application(app_id) is not None:
+                while self.store.get_application(app_id, owner) is not None:
                     app_id = f"{base}-{n}"
                     n += 1
 
-        existing = self.store.get_application(app_id)
+        existing = self.store.get_application(app_id, owner)
         sha = hashlib.sha256(jd_text.encode("utf-8", errors="replace")).hexdigest()
         meta = {
             "id": app_id,
@@ -293,7 +303,10 @@ class CareerService:
             for key in ("company", "title", "location", "url"):
                 if existing.get(key) and not meta.get(key):
                     meta[key] = existing[key]
-        saved = self.store.upsert_application(meta, jd_text=jd_text)
+        try:
+            saved = self.store.upsert_application(meta, jd_text=jd_text, owner=owner)
+        except KeyError as exc:
+            raise RuntimeError(f"Application id conflicts with another vault: {app_id}") from exc
         return {"ok": True, "application": saved, "jdChars": len(jd_text)}
 
     async def _fetch_url_text(self, fetch_url: str) -> tuple[str, dict[str, str]]:
@@ -771,14 +784,15 @@ class CareerService:
         application_id: str,
         types: list[str] | None = None,
         custom_type: str | None = None,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
-        app = self.store.get_application(application_id)
+        app = self.store.get_application(application_id, owner)
         if app is None:
             raise RuntimeError(f"Application not found: {application_id}")
-        jd_text = self.store.get_jd(application_id)
+        jd_text = self.store.get_jd(application_id, owner)
         if not jd_text.strip():
             raise RuntimeError("JD missing; ingest a job description first")
-        truth = self.store.get_truth()
+        truth = self.store.get_truth(owner)
         artifact_types = self._normalize_types(types, custom_type)
         emphasis = self._emphasis_hint(truth, jd_text)
         batches = self._type_batches(artifact_types)
@@ -817,7 +831,7 @@ class CareerService:
             "approval": "draft",
             "durationMs": duration_ms,
         }
-        saved = self.store.save_generation(application_id, generation=sidecar, content=body)
+        saved = self.store.save_generation(application_id, generation=sidecar, content=body, owner=owner)
         return {
             "ok": True,
             "application_id": application_id,
@@ -826,29 +840,41 @@ class CareerService:
         }
 
     def generation_approve(
-        self, *, application_id: str, generation_id: str, confirm: bool = False
+        self,
+        *,
+        application_id: str,
+        generation_id: str,
+        confirm: bool = False,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
         if not confirm:
             raise RuntimeError("confirm=true is required to approve a generation")
         try:
-            found = self.store.approve_generation(application_id, generation_id)
+            found = self.store.approve_generation(application_id, generation_id, owner)
         except KeyError as exc:
             raise RuntimeError(f"generation not found: {generation_id}") from exc
         return {"ok": True, "generation": found, "application_id": application_id}
 
     def generation_delete(
-        self, *, application_id: str, generation_id: str, confirm: bool = False
+        self,
+        *,
+        application_id: str,
+        generation_id: str,
+        confirm: bool = False,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
         if not confirm:
             raise RuntimeError("confirm=true is required to delete a generation")
         try:
-            self.store.delete_generation(application_id, generation_id)
+            self.store.delete_generation(application_id, generation_id, owner)
         except KeyError as exc:
             raise RuntimeError(f"generation not found: {generation_id}") from exc
         return {"ok": True, "deleted": generation_id, "application_id": application_id}
 
-    def generation_get(self, *, application_id: str, generation_id: str) -> dict[str, Any]:
-        found = self.store.get_generation(application_id, generation_id)
+    def generation_get(
+        self, *, application_id: str, generation_id: str, owner: str = SHARED_OWNER
+    ) -> dict[str, Any]:
+        found = self.store.get_generation(application_id, generation_id, owner)
         if found is None:
             raise RuntimeError(f"generation not found: {generation_id}")
         return {"ok": True, "generation": found, "content": found.get("content") or ""}

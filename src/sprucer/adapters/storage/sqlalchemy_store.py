@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
+from sprucer.tenancy import SHARED_OWNER
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -29,6 +31,7 @@ class TruthRow(Base):
     __tablename__ = "truth"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_subject: Mapped[str] = mapped_column(String(200), nullable=False, unique=True, default=SHARED_OWNER)
     document: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -37,6 +40,7 @@ class ApplicationRow(Base):
     __tablename__ = "applications"
 
     id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    owner_subject: Mapped[str] = mapped_column(String(200), nullable=False, default=SHARED_OWNER, index=True)
     company: Mapped[str] = mapped_column(String(300), default="")
     title: Mapped[str] = mapped_column(String(300), default="")
     location: Mapped[str] = mapped_column(String(300), default="")
@@ -98,7 +102,6 @@ class SqlAlchemyStorage:
         connect_args: dict[str, Any] = {}
         if database_url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
-            # Ensure parent dir exists for sqlite file URLs
             if database_url.startswith("sqlite:///./") or database_url.startswith("sqlite:////"):
                 raw = database_url.removeprefix("sqlite:///")
                 path = Path(raw)
@@ -111,16 +114,9 @@ class SqlAlchemyStorage:
     def ensure_schema(self) -> None:
         Base.metadata.create_all(self.engine)
         self._ensure_generation_duration_column()
-        with self._Session() as session:
-            row = session.scalar(select(TruthRow).limit(1))
-            if row is None:
-                doc = dict(EMPTY_TRUTH)
-                doc["updatedAt"] = _now().isoformat()
-                session.add(TruthRow(document=json.dumps(doc, ensure_ascii=True), updated_at=_now()))
-                session.commit()
+        self._ensure_owner_subject_columns()
 
     def _ensure_generation_duration_column(self) -> None:
-        """Add duration_ms to existing DBs created before the column existed."""
         try:
             cols = {c["name"] for c in inspect(self.engine).get_columns("generations")}
         except Exception:
@@ -130,14 +126,43 @@ class SqlAlchemyStorage:
         with self.engine.begin() as conn:
             conn.execute(text("ALTER TABLE generations ADD COLUMN duration_ms INTEGER"))
 
-    def get_truth(self) -> dict[str, Any]:
+    def _ensure_owner_subject_columns(self) -> None:
+        """Add owner_subject to legacy DBs and backfill to shared."""
+        for table in ("truth", "applications"):
+            try:
+                cols = {c["name"] for c in inspect(self.engine).get_columns(table)}
+            except Exception:
+                continue
+            if "owner_subject" in cols:
+                continue
+            with self.engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table} ADD COLUMN owner_subject "
+                        f"VARCHAR(200) NOT NULL DEFAULT '{SHARED_OWNER}'"
+                    )
+                )
+
+    def get_truth(self, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            row = session.scalar(select(TruthRow).limit(1))
+            row = session.scalar(select(TruthRow).where(TruthRow.owner_subject == owner).limit(1))
             if row is None:
-                return dict(EMPTY_TRUTH)
+                doc = dict(EMPTY_TRUTH)
+                doc["updatedAt"] = _now().isoformat()
+                session.add(
+                    TruthRow(
+                        owner_subject=owner,
+                        document=json.dumps(doc, ensure_ascii=True),
+                        updated_at=_now(),
+                    )
+                )
+                session.commit()
+                return doc
             return json.loads(row.document)
 
-    def save_truth(self, truth: dict[str, Any]) -> dict[str, Any]:
+    def save_truth(self, truth: dict[str, Any], owner: str = SHARED_OWNER) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
         truth = dict(truth)
         truth["updatedAt"] = _now().isoformat()
         try:
@@ -145,10 +170,12 @@ class SqlAlchemyStorage:
         except Exception:
             truth["version"] = 1
         with self._Session() as session:
-            row = session.scalar(select(TruthRow).limit(1))
+            row = session.scalar(select(TruthRow).where(TruthRow.owner_subject == owner).limit(1))
             payload = json.dumps(truth, ensure_ascii=True, indent=2)
             if row is None:
-                session.add(TruthRow(document=payload, updated_at=_now()))
+                session.add(
+                    TruthRow(owner_subject=owner, document=payload, updated_at=_now())
+                )
             else:
                 row.document = payload
                 row.updated_at = _now()
@@ -188,26 +215,44 @@ class SqlAlchemyStorage:
             out["jdText"] = row.jd_text
         return out
 
-    def list_applications(self) -> list[dict[str, Any]]:
+    def _get_app_row(self, session: Session, application_id: str, owner: str) -> ApplicationRow | None:
+        row = session.get(ApplicationRow, application_id)
+        if row is None or row.owner_subject != owner:
+            return None
+        return row
+
+    def list_applications(self, owner: str = SHARED_OWNER) -> list[dict[str, Any]]:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            rows = session.scalars(select(ApplicationRow).order_by(ApplicationRow.updated_at.desc())).all()
+            rows = session.scalars(
+                select(ApplicationRow)
+                .where(ApplicationRow.owner_subject == owner)
+                .order_by(ApplicationRow.updated_at.desc())
+            ).all()
             return [self._app_dict(r) for r in rows]
 
-    def get_application(self, application_id: str) -> dict[str, Any] | None:
+    def get_application(self, application_id: str, owner: str = SHARED_OWNER) -> dict[str, Any] | None:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            row = session.get(ApplicationRow, application_id)
+            row = self._get_app_row(session, application_id, owner)
             if row is None:
                 return None
             return self._app_dict(row, include_jd=True)
 
-    def upsert_application(self, meta: dict[str, Any], *, jd_text: str | None = None) -> dict[str, Any]:
+    def upsert_application(
+        self, meta: dict[str, Any], *, jd_text: str | None = None, owner: str = SHARED_OWNER
+    ) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
         app_id = str(meta["id"])
         with self._Session() as session:
             row = session.get(ApplicationRow, app_id)
             now = _now()
+            if row is not None and row.owner_subject != owner:
+                raise KeyError(app_id)
             if row is None:
-                row = ApplicationRow(id=app_id, created_at=now)
+                row = ApplicationRow(id=app_id, owner_subject=owner, created_at=now)
                 session.add(row)
+            row.owner_subject = owner
             row.company = str(meta.get("company") or "")
             row.title = str(meta.get("title") or "")
             row.location = str(meta.get("location") or "")
@@ -224,29 +269,37 @@ class SqlAlchemyStorage:
             session.refresh(row)
             return self._app_dict(row, include_jd=True)
 
-    def delete_application(self, application_id: str) -> None:
+    def delete_application(self, application_id: str, owner: str = SHARED_OWNER) -> None:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            row = session.get(ApplicationRow, application_id)
+            row = self._get_app_row(session, application_id, owner)
             if row is None:
                 raise KeyError(application_id)
             session.delete(row)
             session.commit()
 
-    def get_jd(self, application_id: str) -> str:
+    def get_jd(self, application_id: str, owner: str = SHARED_OWNER) -> str:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            row = session.get(ApplicationRow, application_id)
+            row = self._get_app_row(session, application_id, owner)
             if row is None:
                 raise KeyError(application_id)
             return row.jd_text or ""
 
-    def list_generations(self, application_id: str) -> list[dict[str, Any]]:
-        app = self.get_application(application_id)
+    def list_generations(self, application_id: str, owner: str = SHARED_OWNER) -> list[dict[str, Any]]:
+        app = self.get_application(application_id, owner=owner)
         if app is None:
             raise KeyError(application_id)
         return list(app.get("generations") or [])
 
-    def get_generation(self, application_id: str, generation_id: str) -> dict[str, Any] | None:
+    def get_generation(
+        self, application_id: str, generation_id: str, owner: str = SHARED_OWNER
+    ) -> dict[str, Any] | None:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
+            app = self._get_app_row(session, application_id, owner)
+            if app is None:
+                return None
             row = session.get(GenerationRow, generation_id)
             if row is None or row.application_id != application_id:
                 return None
@@ -268,9 +321,11 @@ class SqlAlchemyStorage:
         *,
         generation: dict[str, Any],
         content: str,
+        owner: str = SHARED_OWNER,
     ) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
-            app = session.get(ApplicationRow, application_id)
+            app = self._get_app_row(session, application_id, owner)
             if app is None:
                 raise KeyError(application_id)
             gen_id = str(generation["id"])
@@ -302,8 +357,14 @@ class SqlAlchemyStorage:
                 "files": [],
             }
 
-    def approve_generation(self, application_id: str, generation_id: str) -> dict[str, Any]:
+    def approve_generation(
+        self, application_id: str, generation_id: str, owner: str = SHARED_OWNER
+    ) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
+            app = self._get_app_row(session, application_id, owner)
+            if app is None:
+                raise KeyError(generation_id)
             row = session.get(GenerationRow, generation_id)
             if row is None or row.application_id != application_id:
                 raise KeyError(generation_id)
@@ -321,15 +382,19 @@ class SqlAlchemyStorage:
                 "files": [],
             }
 
-    def delete_generation(self, application_id: str, generation_id: str) -> None:
+    def delete_generation(
+        self, application_id: str, generation_id: str, owner: str = SHARED_OWNER
+    ) -> None:
+        owner = owner or SHARED_OWNER
         with self._Session() as session:
+            app = self._get_app_row(session, application_id, owner)
+            if app is None:
+                raise KeyError(generation_id)
             row = session.get(GenerationRow, generation_id)
             if row is None or row.application_id != application_id:
                 raise KeyError(generation_id)
-            app = session.get(ApplicationRow, application_id)
             session.delete(row)
-            if app is not None:
-                app.updated_at = _now()
+            app.updated_at = _now()
             session.commit()
 
 

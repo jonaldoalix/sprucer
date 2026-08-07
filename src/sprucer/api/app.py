@@ -6,8 +6,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from sprucer.adapters.auth import AuthAdapter, AuthContext, create_auth
+from fastapi.responses import RedirectResponse
+
+from sprucer.adapters.auth import AuthAdapter, AuthContext, OidcAuth, create_auth
 from sprucer.adapters.llm import OpenAICompatLlm
+from sprucer.adapters.oidc import new_state
 from sprucer.adapters.storage import create_storage
 from sprucer.service import CareerService
 from sprucer.settings import Settings, get_settings
@@ -64,6 +67,12 @@ class ApproveBody(BaseModel):
     confirm: bool = False
 
 
+class DeleteGenerationBody(BaseModel):
+    application_id: str
+    generation_id: str
+    confirm: bool = False
+
+
 def build_app(
     *,
     settings: Settings | None = None,
@@ -88,6 +97,8 @@ def build_app(
             oidc_issuer=settings.oidc_issuer,
             oidc_client_id=settings.oidc_client_id,
             oidc_client_secret=settings.oidc_client_secret,
+            oidc_redirect_uri=settings.oidc_redirect_uri,
+            oidc_post_login_redirect=settings.oidc_post_login_redirect,
         )
 
     app = FastAPI(title="Sprucer", version="0.1.0", docs_url="/docs", redoc_url="/redoc")
@@ -113,6 +124,10 @@ def build_app(
     def health() -> dict[str, Any]:
         return {"ok": True, "service": "sprucer", "auth_mode": app.state.auth.mode}
 
+    @app.get("/v1/auth/config")
+    def auth_config() -> dict[str, Any]:
+        return {"ok": True, **app.state.auth.public_config()}
+
     @app.post("/v1/auth/login")
     def login(payload: LoginBody, response: Response) -> dict[str, Any]:
         ctx = app.state.auth.login(response, password=payload.password, api_key=payload.api_key)
@@ -126,6 +141,60 @@ def build_app(
     @app.get("/v1/auth/whoami")
     def whoami(ctx: AuthContext = Depends(require_auth)) -> dict[str, Any]:
         return {"ok": True, "subject": ctx.subject, "mode": ctx.mode}
+
+    @app.get("/v1/auth/oidc/start")
+    async def oidc_start(response: Response) -> RedirectResponse:
+        auth = app.state.auth
+        if not isinstance(auth, OidcAuth):
+            raise HTTPException(status_code=400, detail="OIDC is not enabled (set SPRUCER_AUTH_MODE=oidc)")
+        state = new_state()
+        response.set_cookie(
+            auth.state_cookie,
+            state,
+            httponly=True,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        url = await auth.client.authorization_url(state=state)
+        redirect = RedirectResponse(url=url, status_code=302)
+        redirect.set_cookie(
+            auth.state_cookie,
+            state,
+            httponly=True,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        return redirect
+
+    @app.get("/v1/auth/oidc/callback")
+    async def oidc_callback(
+        request: Request,
+        response: Response,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ):
+        auth = app.state.auth
+        if not isinstance(auth, OidcAuth):
+            raise HTTPException(status_code=400, detail="OIDC is not enabled")
+        if error:
+            raise HTTPException(status_code=400, detail=f"OIDC error: {error}")
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="Missing code/state")
+        expected = request.cookies.get(auth.state_cookie)
+        if not expected or expected != state:
+            raise HTTPException(status_code=400, detail="Invalid OIDC state")
+        try:
+            tokens = await auth.client.exchange_code(code)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        subject = str(tokens.get("sub"))
+        redirect = RedirectResponse(url=auth.post_login_redirect, status_code=302)
+        auth.establish_session(redirect, subject)
+        redirect.delete_cookie(auth.state_cookie, path="/")
+        return redirect
 
     @app.get("/v1/truth")
     def truth_get(_: AuthContext = Depends(require_auth), service: CareerService = Depends(svc)):
@@ -232,6 +301,21 @@ def build_app(
     ):
         try:
             return service.generation_approve(
+                application_id=payload.application_id,
+                generation_id=payload.generation_id,
+                confirm=payload.confirm,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/generations/delete")
+    def generation_delete(
+        payload: DeleteGenerationBody,
+        _: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            return service.generation_delete(
                 application_id=payload.application_id,
                 generation_id=payload.generation_id,
                 confirm=payload.confirm,

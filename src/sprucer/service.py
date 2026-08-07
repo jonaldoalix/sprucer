@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,13 @@ from sprucer.adapters.llm import LlmAdapter
 from sprucer.adapters.storage.sqlalchemy_store import SqlAlchemyStorage
 
 ARTIFACT_TYPES = ("cover", "resume", "email", "interview", "linkedin")
+ARTIFACT_HEADINGS: dict[str, tuple[str, ...]] = {
+    "cover": ("cover letter", "cover"),
+    "resume": ("resume", "tailored resume"),
+    "email": ("email", "email pitch"),
+    "interview": ("interview prep", "interview", "interview brief"),
+    "linkedin": ("linkedin dm", "linkedin message", "linkedin", "outreach dm", "outreach"),
+}
 LIST_SECTIONS = {
     "signatureStories",
     "blurbs",
@@ -333,6 +341,228 @@ class CareerService:
                 uniq.append(t)
         return uniq
 
+    def _heading_instruction(self, artifact_types: list[str]) -> str:
+        lines: list[str] = []
+        for t in artifact_types:
+            if t == "cover":
+                lines.append("- ## Cover Letter  (full letter body only)")
+            elif t == "email":
+                lines.append(
+                    "- ## Email  (must include Subject: line, greeting, short body, sign-off — NOT a cover letter)"
+                )
+            elif t == "resume":
+                lines.append("- ## Resume")
+            elif t == "interview":
+                lines.append(
+                    "- ## Interview Prep  (practice questions + knowledge-bank refresh notes — see format guide)"
+                )
+            elif t == "linkedin":
+                lines.append(
+                    "- ## LinkedIn DM  (short blind-reach chat message to a hiring manager/recruiter — NOT a resume or profile rewrite)"
+                )
+            else:
+                label = t.replace("custom:", "").replace("-", " ").title()
+                lines.append(f"- ## {label}")
+        forbidden = []
+        if "email" in artifact_types and "cover" not in artifact_types:
+            forbidden.append("Do NOT write ## Cover Letter or any cover-letter prose.")
+        if "cover" in artifact_types and "email" not in artifact_types:
+            forbidden.append("Do NOT write ## Email.")
+        if "linkedin" in artifact_types:
+            forbidden.append(
+                "For LinkedIn DM: do NOT write profile-optimization advice, resume bullets, "
+                "or 'update your LinkedIn' homework. Write the actual message text to send."
+            )
+        if "interview" in artifact_types:
+            forbidden.append(
+                "For Interview Prep: do NOT write only vague study tips. Include concrete practice "
+                "questions with Answer with: coaching lines that cite real vault ids. "
+                "Do NOT invent Project/Story/Metric numeric IDs."
+            )
+        return "\n".join(lines + forbidden)
+
+    def _interview_cite_catalog(self, truth: dict[str, Any]) -> list[dict[str, str]]:
+        """Compact, real vault pointers the model must cite — never invent ticket-style IDs."""
+        items: list[dict[str, str]] = []
+
+        def add(kind: str, item_id: str, label: str) -> None:
+            label = re.sub(r"\s+", " ", (label or "").strip())
+            if not label:
+                return
+            items.append({"kind": kind, "id": (item_id or "").strip(), "label": label[:180]})
+
+        for m in truth.get("metrics") or []:
+            if isinstance(m, dict):
+                add("metric", str(m.get("id") or ""), str(m.get("text") or ""))
+        for p in truth.get("projects") or []:
+            if isinstance(p, dict):
+                add(
+                    "project",
+                    str(p.get("id") or ""),
+                    str(p.get("title") or p.get("name") or p.get("text") or ""),
+                )
+        for e in truth.get("experience") or []:
+            if isinstance(e, dict):
+                role = str(e.get("role") or "").strip()
+                org = str(e.get("employer") or e.get("company") or e.get("org") or "").strip()
+                label = " @ ".join(x for x in (role, org) if x) or str(e.get("summary") or "")
+                add("experience", str(e.get("id") or ""), label)
+        for s in truth.get("signatureStories") or []:
+            if isinstance(s, dict):
+                add(
+                    "story",
+                    str(s.get("id") or ""),
+                    str(s.get("title") or s.get("name") or s.get("text") or ""),
+                )
+        for b in truth.get("blurbs") or []:
+            if isinstance(b, dict):
+                add(
+                    "blurb",
+                    str(b.get("id") or ""),
+                    str(b.get("title") or b.get("text") or b.get("body") or ""),
+                )
+        for nc in truth.get("neverClaim") or []:
+            text = nc.get("text") if isinstance(nc, dict) else str(nc)
+            add("neverClaim", "", str(text or ""))
+        return items[:40]
+
+    def _artifact_format_guides(
+        self, artifact_types: list[str], *, cite_catalog: list[dict[str, str]] | None = None
+    ) -> str:
+        guides: list[str] = []
+        if "interview" in artifact_types:
+            catalog_lines = []
+            for row in cite_catalog or []:
+                cid = (row.get("id") or "").strip()
+                label = (row.get("label") or "").strip()
+                kind = (row.get("kind") or "").strip()
+                if cid:
+                    catalog_lines.append(f"- [{kind}] id=`{cid}` — {label}")
+                else:
+                    catalog_lines.append(f"- [{kind}] — {label}")
+            catalog_block = (
+                "\n".join(catalog_lines)
+                if catalog_lines
+                else "(careerTruth lists are thin — coach with transferable honesty; still invent nothing.)"
+            )
+            guides.append(
+                "Interview Prep purpose: a usable cheat-sheet for THIS interview. "
+                "Each coaching line must help the candidate speak from real vault facts — "
+                "not invent ticket numbers or pretend Epic/HIPAA tenure they do not have.\n"
+                "Interview Prep format (under ## Interview Prep):\n"
+                "1) ### Likely questions — 6 to 10 realistic questions for THIS JD/role. Number them.\n"
+                "   After each question, ONE coaching line in this shape:\n"
+                "   Answer with: <one concrete sentence of how to answer, grounded in a real catalog item>. "
+                "Cite: `<exact id>` (copy an id from interviewCiteCatalog when one fits).\n"
+                "   Bridge transferable experience honestly when the JD asks for tools you have not used "
+                "(e.g. map hosting/ops/SQL work to application-analyst themes). Never invent employers, "
+                "Epic modules, certifications, or metrics.\n"
+                "   Forbidden: fake numeric IDs like 'Project ID 00345', 'Story ID 12345', 'Metric ID 00789'. "
+                "Forbidden: coaching that only says 'Use/Refer to ID …' with no answer substance.\n"
+                "2) ### Refresh from your knowledge bank — bullets of real interviewCiteCatalog entries "
+                "worth re-reading before the interview (use `id` — label). Do not invent new entries.\n"
+                "3) ### Watch-outs — 2 to 4 items quoted/paraphrased from neverClaim that matter here.\n"
+                "Tone: coach for live answers.\n"
+                f"interviewCiteCatalog (cite ONLY from this list):\n{catalog_block}"
+            )
+        if "linkedin" in artifact_types:
+            guides.append(
+                "LinkedIn DM format (under ## LinkedIn DM):\n"
+                "Write the exact short message someone would paste into LinkedIn, Indeed, or similar "
+                "chat/DM — a blind reach to a hiring manager, recruiter, or hiring-team contact.\n"
+                "Constraints: 4 to 8 short sentences max (chat length). First person. Warm and direct. "
+                "One concrete hook from careerTruth tied to the JD. One clear ask (quick chat, referral, "
+                "or how to apply). No Subject line. No resume sections. No bullet dump of experience. "
+                "No advice about improving a LinkedIn profile. Optional first line: Hi {Name}/Hi team —"
+            )
+        if "email" in artifact_types:
+            guides.append(
+                "Email format: Subject: line, then greeting, short body, sign-off. Not a cover letter."
+            )
+        if "cover" in artifact_types:
+            guides.append("Cover Letter format: full letter body ready to send.")
+        if "resume" in artifact_types:
+            guides.append(
+                "Resume format: tailored resume sections/bullets for this JD, grounded in careerTruth."
+            )
+        return "\n\n".join(guides)
+
+    def _content_satisfies_types(
+        self,
+        content: str,
+        artifact_types: list[str],
+        *,
+        cite_ids: set[str] | None = None,
+    ) -> bool:
+        headings = [
+            re.sub(r"^#+\s*", "", ln).strip().lower()
+            for ln in content.splitlines()
+            if re.match(r"^#{1,3}\s+\S", ln)
+        ]
+        low = content.lower()
+        for t in artifact_types:
+            if t.startswith("custom:"):
+                label = t.split(":", 1)[1].replace("-", " ")
+                if not any(label in h for h in headings):
+                    return False
+                continue
+            aliases = ARTIFACT_HEADINGS.get(t, (t,))
+            if not any(any(alias == h or h.startswith(alias) for alias in aliases) for h in headings):
+                return False
+        # Email-only requests must not be a cover letter in disguise
+        if artifact_types == ["email"] or (
+            "email" in artifact_types and "cover" not in artifact_types
+        ):
+            if any(h == "cover letter" or h.startswith("cover letter") for h in headings):
+                if artifact_types == ["email"]:
+                    return False
+            if artifact_types == ["email"] and "subject:" not in low and not any(
+                h == "email" or h.startswith("email") for h in headings
+            ):
+                return False
+        if "linkedin" in artifact_types:
+            profile_advice_markers = (
+                "enhance my profile",
+                "enhance your profile",
+                "update your linkedin",
+                "professional experience :",
+                "professional experience:",
+                "recommend focusing on the following elements",
+                "showcase your relevant skills",
+            )
+            if any(m in low for m in profile_advice_markers):
+                return False
+            # Must look like a sendable message, not a resume outline
+            if "linkedin" in artifact_types and "resume" not in artifact_types:
+                if low.count("\n- ") + low.count("\n* ") > 8 and "hi " not in low[:400]:
+                    return False
+            if "[your name]" in low or "your name]" in low:
+                return False
+        if "interview" in artifact_types:
+            # Require actual practice-question energy, not only study tips
+            question_marks = content.count("?")
+            has_questions_heading = any("question" in h for h in headings)
+            if question_marks < 3 and not has_questions_heading:
+                return False
+            # Reject invented ticket-style IDs (the failure mode we saw from small models)
+            if re.search(
+                r"\b(?:project|story|metric|blurb|experience)\s+id\s+\d{3,}\b",
+                content,
+                flags=re.I,
+            ):
+                return False
+            real_ids = {x for x in (cite_ids or set()) if x}
+            if real_ids:
+                hits = sum(1 for cid in real_ids if cid in content)
+                if hits < 2:
+                    return False
+            # Coaching must not be ID-pointer-only; require answer-hook language somewhere
+            if not re.search(r"answer with\s*:", content, flags=re.I):
+                # Allow softer phrasing if vault ids are clearly cited
+                if not real_ids or sum(1 for cid in real_ids if cid in content) < 3:
+                    return False
+        return True
+
     def _emphasis_hint(self, truth: dict[str, Any], jd_text: str) -> list[dict[str, str]]:
         blob = jd_text.lower()
         plan: list[dict[str, str]] = []
@@ -379,6 +609,138 @@ class CareerService:
         )
         return plan[:16]
 
+    def _type_batches(self, artifact_types: list[str]) -> list[list[str]]:
+        """Split multi-type generates so small local models are not asked for 5 full drafts at once."""
+        if len(artifact_types) <= 2:
+            return [list(artifact_types)]
+        weights = {
+            "interview": 3,
+            "resume": 2,
+            "cover": 2,
+            "email": 1,
+            "linkedin": 1,
+        }
+        batches: list[list[str]] = []
+        current: list[str] = []
+        budget = 0
+        limit = 3
+        for t in artifact_types:
+            w = 2 if t.startswith("custom:") else weights.get(t, 2)
+            # Interview is format-heavy — always its own call when bundling many types.
+            if t == "interview" and current:
+                batches.append(current)
+                current = []
+                budget = 0
+            if current and budget + w > limit:
+                batches.append(current)
+                current = []
+                budget = 0
+            current.append(t)
+            budget += w
+            if t == "interview" or budget >= limit:
+                batches.append(current)
+                current = []
+                budget = 0
+        if current:
+            batches.append(current)
+        return batches
+
+    def _max_tokens_for(self, artifact_types: list[str]) -> int:
+        base = 1000 * max(1, len(artifact_types))
+        if "interview" in artifact_types:
+            base += 1000
+        if "resume" in artifact_types:
+            base += 400
+        return min(4500, max(2000, base))
+
+    async def _generate_batch_markdown(
+        self,
+        *,
+        app: dict[str, Any],
+        truth: dict[str, Any],
+        jd_text: str,
+        artifact_types: list[str],
+        emphasis: list[dict[str, str]],
+    ) -> str:
+        cite_catalog = (
+            self._interview_cite_catalog(truth) if "interview" in artifact_types else []
+        )
+        cite_ids = {row["id"] for row in cite_catalog if row.get("id")}
+        heading_block = self._heading_instruction(artifact_types)
+        format_guides = self._artifact_format_guides(
+            artifact_types, cite_catalog=cite_catalog or None
+        )
+        system = (
+            "You write tailored job-application materials grounded ONLY in the provided "
+            "career truth JSON and job description. Never invent employers, dates, degrees, "
+            "or metrics. Never use em dashes or fancy punctuation; keyboard characters only. "
+            "Respect neverClaim. Choose strengths and superlatives dynamically for this JD. "
+            "Return Markdown with EXACTLY these ## sections (and no others):\n"
+            f"{heading_block}\n\n"
+            "Format guides for the requested artifacts:\n"
+            f"{format_guides}\n\n"
+            "Write only the deliverable under those headings (sendable copy, or prep the candidate can use). "
+            "Do not include an Emphasis section, emphasis plan, or other meta commentary."
+        )
+        user: dict[str, Any] = {
+            "application": {
+                "id": app.get("id"),
+                "company": app.get("company"),
+                "title": app.get("title"),
+                "location": app.get("location"),
+                "url": app.get("url"),
+            },
+            "artifactTypes": artifact_types,
+            "requiredHeadings": heading_block,
+            "formatGuides": format_guides,
+            "emphasisPlanHint": emphasis,
+            "careerTruth": truth,
+            "jobDescription": jd_text[:24000],
+        }
+        if cite_catalog:
+            user["interviewCiteCatalog"] = cite_catalog
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=True)},
+        ]
+        max_tokens = self._max_tokens_for(artifact_types)
+        content = await self.llm.chat(messages, max_tokens=max_tokens)
+        if not self._content_satisfies_types(content, artifact_types, cite_ids=cite_ids):
+            repair = (
+                "Your previous reply did not match the required artifact format. "
+                f"Rewrite the entire response. Required ## sections only:\n{heading_block}\n\n"
+                f"Follow these format guides exactly:\n{format_guides}\n"
+                "Do not include any other ## headings. Keep each section concise enough to finish."
+            )
+            if "interview" in artifact_types:
+                repair += (
+                    "\nFor Interview Prep: use Answer with: … Cite: `real-id` lines. "
+                    "Cite only ids from interviewCiteCatalog. Never invent Project/Story/Metric "
+                    "numeric ticket IDs. Do not claim Epic or HIPAA work absent from careerTruth."
+                )
+            if "linkedin" in artifact_types:
+                profile = truth.get("profile") if isinstance(truth.get("profile"), dict) else {}
+                sign = (profile or {}).get("shortName") or (profile or {}).get("name") or ""
+                repair += (
+                    "\nFor LinkedIn DM: write the sendable message only; sign with the real name "
+                    f"from careerTruth.profile ({sign or 'profile.name'}), never [Your Name]."
+                )
+            content = await self.llm.chat(
+                messages
+                + [
+                    {"role": "assistant", "content": content.strip()[:4000]},
+                    {"role": "user", "content": repair},
+                ],
+                max_tokens=max_tokens,
+            )
+            if not self._content_satisfies_types(content, artifact_types, cite_ids=cite_ids):
+                raise RuntimeError(
+                    "Model returned the wrong artifact type or unusable interview prep "
+                    f"for ({', '.join(artifact_types)}). Try fewer types at once, generate again, "
+                    "or use a stronger LLM."
+                )
+        return content.strip()
+
     async def generate(
         self,
         *,
@@ -395,44 +757,32 @@ class CareerService:
         truth = self.store.get_truth()
         artifact_types = self._normalize_types(types, custom_type)
         emphasis = self._emphasis_hint(truth, jd_text)
+        batches = self._type_batches(artifact_types)
 
-        system = (
-            "You write tailored job-application materials grounded ONLY in the provided "
-            "career truth JSON and job description. Never invent employers, dates, degrees, "
-            "or metrics. Never use em dashes or fancy punctuation; keyboard characters only. "
-            "Respect neverClaim. Choose strengths and superlatives dynamically for this JD; "
-            "cite which truth metric/experience ids you used in an Emphasis section. "
-            "Voice: professional, not bland, first person. "
-            "Return Markdown with a clear heading per requested artifact type."
-        )
-        user = {
-            "application": {
-                "id": app.get("id"),
-                "company": app.get("company"),
-                "title": app.get("title"),
-                "location": app.get("location"),
-                "url": app.get("url"),
-            },
-            "artifactTypes": artifact_types,
-            "emphasisPlanHint": emphasis,
-            "careerTruth": truth,
-            "jobDescription": jd_text[:24000],
-        }
-        content = await self.llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(user, ensure_ascii=True)},
-            ]
-        )
+        started = time.perf_counter()
+        parts: list[str] = []
+        for batch in batches:
+            part = await self._generate_batch_markdown(
+                app=app,
+                truth=truth,
+                jd_text=jd_text,
+                artifact_types=batch,
+                emphasis=emphasis,
+            )
+            parts.append(part)
+        content = "\n\n".join(parts)
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
 
         gen_id = f"gen-{uuid.uuid4().hex[:10]}"
+        # Emphasis plan stays in generation sidecar metadata — not in the user-facing body.
+        company = (app.get("company") or "").strip()
+        title = (app.get("title") or "").strip()
+        location = (app.get("location") or "").strip()
+        app_line = " — ".join(p for p in (company, location, title) if p) or "Application"
         body = (
             f"<!-- generation_id={gen_id} approval=draft types={','.join(artifact_types)} -->\n\n"
             f"# Generation {gen_id}\n\n"
-            f"Application: {app.get('company') or ''} — {app.get('title') or ''}\n\n"
-            f"## Emphasis plan (pre-model hint)\n\n"
-            + "\n".join(f"- `{e.get('id')}`: {e.get('reason')} — {e.get('text')}" for e in emphasis)
-            + "\n\n---\n\n"
+            f"Application: {app_line}\n\n"
             + content.strip()
             + "\n"
         )
@@ -441,6 +791,7 @@ class CareerService:
             "types": artifact_types,
             "emphasisPlan": emphasis,
             "approval": "draft",
+            "durationMs": duration_ms,
         }
         saved = self.store.save_generation(application_id, generation=sidecar, content=body)
         return {
@@ -460,6 +811,17 @@ class CareerService:
         except KeyError as exc:
             raise RuntimeError(f"generation not found: {generation_id}") from exc
         return {"ok": True, "generation": found, "application_id": application_id}
+
+    def generation_delete(
+        self, *, application_id: str, generation_id: str, confirm: bool = False
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise RuntimeError("confirm=true is required to delete a generation")
+        try:
+            self.store.delete_generation(application_id, generation_id)
+        except KeyError as exc:
+            raise RuntimeError(f"generation not found: {generation_id}") from exc
+        return {"ok": True, "deleted": generation_id, "application_id": application_id}
 
     def generation_get(self, *, application_id: str, generation_id: str) -> dict[str, Any]:
         found = self.store.get_generation(application_id, generation_id)

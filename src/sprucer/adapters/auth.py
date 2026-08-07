@@ -8,6 +8,8 @@ from typing import Protocol
 
 from fastapi import HTTPException, Request, Response
 
+from sprucer.adapters.oidc import OidcClient, sign_session, verify_session
+
 
 @dataclass
 class AuthContext:
@@ -24,6 +26,8 @@ class AuthAdapter(Protocol):
 
     def logout(self, response: Response) -> None: ...
 
+    def public_config(self) -> dict: ...
+
 
 class NoneAuth:
     mode = "none"
@@ -36,6 +40,9 @@ class NoneAuth:
 
     def logout(self, response: Response) -> None:
         return None
+
+    def public_config(self) -> dict:
+        return {"mode": self.mode, "dev_login": False, "oidc_login": False}
 
 
 class DevAuth:
@@ -73,11 +80,15 @@ class DevAuth:
             httponly=True,
             samesite="lax",
             max_age=60 * 60 * 24 * 14,
+            path="/",
         )
         return AuthContext(subject="dev", mode=self.mode)
 
     def logout(self, response: Response) -> None:
-        response.delete_cookie(self.cookie_name)
+        response.delete_cookie(self.cookie_name, path="/")
+
+    def public_config(self) -> dict:
+        return {"mode": self.mode, "dev_login": True, "oidc_login": False}
 
 
 class ApiKeyAuth:
@@ -103,42 +114,84 @@ class ApiKeyAuth:
     def logout(self, response: Response) -> None:
         return None
 
+    def public_config(self) -> dict:
+        return {"mode": self.mode, "dev_login": False, "oidc_login": False, "api_key": True}
+
 
 class OidcAuth:
-    """Placeholder gate: validates that OIDC is configured; browser flow lives in the web app."""
-
     mode = "oidc"
+    cookie_name = "sprucer_session"
+    state_cookie = "sprucer_oidc_state"
 
-    def __init__(self, *, issuer: str, client_id: str, client_secret: str, api_keys: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        issuer: str,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        session_secret: str,
+        api_keys: set[str] | None = None,
+        post_login_redirect: str = "http://127.0.0.1:3737/applications",
+    ) -> None:
         if not issuer or not client_id:
             raise RuntimeError("OIDC requires SPRUCER_OIDC_ISSUER and SPRUCER_OIDC_CLIENT_ID")
-        self.issuer = issuer
-        self.client_id = client_id
-        self.client_secret = client_secret
+        self.client = OidcClient(
+            issuer=issuer,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+        self.session_secret = session_secret
         self.api_keys = api_keys or set()
+        self.redirect_uri = redirect_uri
+        self.post_login_redirect = post_login_redirect
 
     def authenticate(self, request: Request) -> AuthContext:
-        # Headless: allow API keys alongside OIDC browser sessions proxied by the web app.
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1].strip()
             if token in self.api_keys:
                 return AuthContext(subject="api-key", mode="api_key")
-            # Web may forward a session token; for v0 accept opaque trusted header from same-origin proxy.
-            if request.headers.get("x-sprucer-oidc-sub"):
-                return AuthContext(subject=request.headers["x-sprucer-oidc-sub"], mode=self.mode)
-        if request.headers.get("x-sprucer-oidc-sub"):
-            return AuthContext(subject=request.headers["x-sprucer-oidc-sub"], mode=self.mode)
+        cookie = request.cookies.get(self.cookie_name)
+        if cookie:
+            sub = verify_session(self.session_secret, cookie)
+            if sub:
+                return AuthContext(subject=sub, mode=self.mode)
         raise HTTPException(
             status_code=401,
             detail="OIDC session required (or API key). Complete login via the web app.",
         )
 
     def login(self, response: Response, *, password: str | None = None, api_key: str | None = None) -> AuthContext:
-        raise HTTPException(status_code=400, detail="Use the web OIDC login flow")
+        if api_key and api_key in self.api_keys:
+            return AuthContext(subject="api-key", mode="api_key")
+        raise HTTPException(status_code=400, detail="Use OIDC login (GET /v1/auth/oidc/start)")
 
     def logout(self, response: Response) -> None:
-        return None
+        response.delete_cookie(self.cookie_name, path="/")
+        response.delete_cookie(self.state_cookie, path="/")
+
+    def public_config(self) -> dict:
+        return {
+            "mode": self.mode,
+            "dev_login": False,
+            "oidc_login": True,
+            "oidc_start": "/v1/auth/oidc/start",
+            "issuer": self.client.issuer,
+        }
+
+    def establish_session(self, response: Response, subject: str) -> AuthContext:
+        token = sign_session(self.session_secret, subject)
+        response.set_cookie(
+            self.cookie_name,
+            token,
+            httponly=True,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 14,
+            path="/",
+        )
+        return AuthContext(subject=subject, mode=self.mode)
 
 
 def create_auth(
@@ -150,8 +203,11 @@ def create_auth(
     oidc_issuer: str = "",
     oidc_client_id: str = "",
     oidc_client_secret: str = "",
+    oidc_redirect_uri: str = "http://127.0.0.1:3737/v1/auth/oidc/callback",
+    oidc_post_login_redirect: str = "http://127.0.0.1:3737/applications",
 ) -> AuthAdapter:
     mode = (mode or "dev").strip().lower()
+    secret = session_secret or secrets.token_hex(16)
     if mode == "none":
         return NoneAuth()
     if mode == "api_key":
@@ -163,8 +219,9 @@ def create_auth(
             issuer=oidc_issuer,
             client_id=oidc_client_id,
             client_secret=oidc_client_secret,
+            redirect_uri=oidc_redirect_uri,
+            session_secret=secret,
             api_keys=api_keys,
+            post_login_redirect=oidc_post_login_redirect,
         )
-    # default / dev
-    secret = session_secret or secrets.token_hex(16)
     return DevAuth(password=dev_password or "sprucer-dev", secret=secret)

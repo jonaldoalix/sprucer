@@ -26,7 +26,13 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   try {
     json = text.trim() ? (JSON.parse(text) as Record<string, unknown>) : {};
   } catch {
-    throw new Error(`Non-JSON response from API (${res.status})`);
+    const snippet = text.replace(/\s+/g, " ").trim().slice(0, 80);
+    throw new Error(
+      `Non-JSON response from API (${res.status})${snippet ? `: ${snippet}` : ""}. ` +
+        (res.status >= 500
+          ? "The web proxy or brain may have timed out — try Generate again."
+          : "Check that the Sprucer brain is running."),
+    );
   }
   if (!res.ok) {
     throw new Error(String(json.detail || json.error || `HTTP ${res.status}`));

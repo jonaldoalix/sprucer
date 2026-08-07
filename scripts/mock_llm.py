@@ -7,15 +7,20 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-REPLY = """## cover
+REPLY = """## Cover Letter
 
-I am applying for this role with facts drawn only from the provided career truth.
+I am applying for the Senior Platform Engineer role with facts drawn only from the provided career truth.
 
 At Northwind Labs I own CI and deploy pipelines, and I cut average PR time-to-prod from 2 days to under 4 hours. That maps directly to your need for safer, faster pull-request-to-production paths.
 
-## email
+I would welcome a conversation about how that experience can help Acme Cloud ship reliably at speed.
 
-Subject: Application — Senior Platform Engineer
+Sincerely,
+Alex
+
+## Email
+
+Subject: Application - Senior Platform Engineer
 
 Hello,
 
@@ -23,12 +28,6 @@ I am writing about the Senior Platform Engineer role. My recent work centers on 
 
 Thanks,
 Alex
-
-## Emphasis
-
-- metric-pr-speed
-- exp-northwind
-- blurb-dx
 """
 
 

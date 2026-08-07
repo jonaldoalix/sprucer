@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     oidc_issuer: str = ""
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
-    oidc_redirect_uri: str = "http://127.0.0.1:3737/api/auth/callback"
+    oidc_redirect_uri: str = "http://127.0.0.1:3737/v1/auth/oidc/callback"
+    oidc_post_login_redirect: str = "http://127.0.0.1:3737/applications"
 
     cors_origins: str = "http://127.0.0.1:3737,http://localhost:3737"
 

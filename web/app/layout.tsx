@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, Figtree } from "next/font/google";
 import Link from "next/link";
+import { SiteNav } from "@/components/SiteNav";
 import "./globals.css";
 
 const display = Fraunces({
@@ -12,7 +13,7 @@ const display = Fraunces({
 const body = Figtree({
   subsets: ["latin"],
   variable: "--font-body-loaded",
-  weight: ["400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -23,6 +24,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`}>
+      <head>
+        <link rel="stylesheet" href="/theme.override.css" />
+      </head>
       <body
         style={
           {
@@ -36,11 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link className="brand" href="/">
               Spruc<span>er</span>
             </Link>
-            <nav className="nav">
-              <Link href="/applications">Applications</Link>
-              <Link href="/knowledge">Knowledge</Link>
-              <Link href="/login">Login</Link>
-            </nav>
+            <SiteNav />
           </header>
           <main className="main">{children}</main>
         </div>

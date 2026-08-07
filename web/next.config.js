@@ -1,15 +1,10 @@
 /** @type {import('next').NextConfig} */
-const brain = process.env.SPRUCER_PUBLIC_URL || "http://127.0.0.1:8787";
-
 const nextConfig = {
   output: "standalone",
-  async rewrites() {
-    // Same-origin proxy so session cookies work on localhost and 127.0.0.1.
-    return [
-      { source: "/v1/:path*", destination: `${brain}/v1/:path*` },
-      { source: "/health", destination: `${brain}/health` },
-    ];
-  },
+  // Allow HMR / assets when opening the lab Tailscale (or LAN) IP instead of localhost.
+  allowedDevOrigins: ["100.64.0.5", "192.168.1.50", "fsb-01"],
+  // /v1 and /health are handled by App Router route handlers with long generate timeouts
+  // (Next rewrites abort ~30s and return a non-JSON 500).
 };
 
 module.exports = nextConfig;

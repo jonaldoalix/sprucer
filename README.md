@@ -23,11 +23,17 @@ cp .env.example .env
 # API (SQLite default)
 sprucer-brain
 
-# In another shell: web UI
+# In another shell: web UI (binds 0.0.0.0 so Tailscale/LAN can reach it)
 cd web && npm install && npm run dev
 ```
 
-Open http://localhost:3737 — API defaults to http://127.0.0.1:8787.
+Open http://localhost:3737 — or on the lab Tailscale mesh http://100.64.0.5:3737. API defaults to http://127.0.0.1:8787 (the web UI proxies `/v1`).
+
+To start mock LLM + brain + web only if they are not already running:
+
+```bash
+./scripts/ensure-dev-stack.sh
+```
 
 Compose (API + web, SQLite volume):
 
@@ -45,9 +51,9 @@ docker compose -f compose.example.yml up --build
 | `SPRUCER_LLM_URL` | OpenAI-compatible base (e.g. `http://127.0.0.1:4000/v1`) |
 | `SPRUCER_LLM_API_KEY` | Bearer token for the LLM endpoint |
 | `SPRUCER_LLM_MODEL` | Model id (e.g. `qwen-coder`, `gpt-4o-mini`) |
-| `SPRUCER_OIDC_*` | Issuer / client id / secret when `auth_mode=oidc` |
+| `SPRUCER_OIDC_*` | Issuer / client / secret / redirect when `auth_mode=oidc` |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TRUTH_SCHEMA.md](docs/TRUTH_SCHEMA.md), and [docs/MIGRATION.md](docs/MIGRATION.md) (filesystem vault import).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/AUTH.md](docs/AUTH.md), [docs/THEMING.md](docs/THEMING.md), [docs/TRUTH_SCHEMA.md](docs/TRUTH_SCHEMA.md), and [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Hard rules (product)
 

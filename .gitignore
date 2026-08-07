@@ -29,6 +29,9 @@ data/
 .sprucer/
 .npm-cache/
 web/.npm-cache/
+.pw/
+.pw-browsers/
+.shots/
 
 # OS / editor
 .DS_Store

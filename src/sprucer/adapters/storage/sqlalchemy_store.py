@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -65,6 +65,7 @@ class GenerationRow(Base):
     emphasis_json: Mapped[str] = mapped_column(Text, default="[]")
     content: Mapped[str] = mapped_column(Text, default="")
     approval: Mapped[str] = mapped_column(String(40), default="draft")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     application: Mapped[ApplicationRow] = relationship(back_populates="generations")
@@ -109,6 +110,7 @@ class SqlAlchemyStorage:
 
     def ensure_schema(self) -> None:
         Base.metadata.create_all(self.engine)
+        self._ensure_generation_duration_column()
         with self._Session() as session:
             row = session.scalar(select(TruthRow).limit(1))
             if row is None:
@@ -116,6 +118,17 @@ class SqlAlchemyStorage:
                 doc["updatedAt"] = _now().isoformat()
                 session.add(TruthRow(document=json.dumps(doc, ensure_ascii=True), updated_at=_now()))
                 session.commit()
+
+    def _ensure_generation_duration_column(self) -> None:
+        """Add duration_ms to existing DBs created before the column existed."""
+        try:
+            cols = {c["name"] for c in inspect(self.engine).get_columns("generations")}
+        except Exception:
+            return
+        if "duration_ms" in cols:
+            return
+        with self.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE generations ADD COLUMN duration_ms INTEGER"))
 
     def get_truth(self) -> dict[str, Any]:
         with self._Session() as session:
@@ -151,6 +164,7 @@ class SqlAlchemyStorage:
                 "emphasisPlan": json.loads(g.emphasis_json or "[]"),
                 "approval": g.approval,
                 "approvedAt": _iso(g.approved_at),
+                "durationMs": g.duration_ms,
                 "files": [],
             }
             for g in (row.generations or [])
@@ -243,6 +257,7 @@ class SqlAlchemyStorage:
                 "emphasisPlan": json.loads(row.emphasis_json or "[]"),
                 "approval": row.approval,
                 "approvedAt": _iso(row.approved_at),
+                "durationMs": row.duration_ms,
                 "content": row.content,
                 "files": [],
             }
@@ -266,6 +281,11 @@ class SqlAlchemyStorage:
                 emphasis_json=json.dumps(generation.get("emphasisPlan") or [], ensure_ascii=True),
                 content=content,
                 approval=str(generation.get("approval") or "draft"),
+                duration_ms=(
+                    int(generation["durationMs"])
+                    if generation.get("durationMs") is not None
+                    else None
+                ),
                 created_at=_now(),
             )
             session.add(row)
@@ -278,6 +298,7 @@ class SqlAlchemyStorage:
                 "emphasisPlan": generation.get("emphasisPlan") or [],
                 "approval": row.approval,
                 "approvedAt": None,
+                "durationMs": row.duration_ms,
                 "files": [],
             }
 
@@ -296,8 +317,20 @@ class SqlAlchemyStorage:
                 "emphasisPlan": json.loads(row.emphasis_json or "[]"),
                 "approval": row.approval,
                 "approvedAt": _iso(row.approved_at),
+                "durationMs": row.duration_ms,
                 "files": [],
             }
+
+    def delete_generation(self, application_id: str, generation_id: str) -> None:
+        with self._Session() as session:
+            row = session.get(GenerationRow, generation_id)
+            if row is None or row.application_id != application_id:
+                raise KeyError(generation_id)
+            app = session.get(ApplicationRow, application_id)
+            session.delete(row)
+            if app is not None:
+                app.updated_at = _now()
+            session.commit()
 
 
 def create_storage(database_url: str) -> SqlAlchemyStorage:

@@ -114,3 +114,39 @@ def test_truth_add_blurb(client: TestClient):
     assert res.status_code == 200
     blurbs = res.json()["truth"]["blurbs"]
     assert any(b.get("text") == "A defensible one-liner." for b in blurbs)
+
+
+def test_generate_all_five_preset_types(client: TestClient):
+    _auth(client)
+    jd = (FIXTURES / "sample-jd.txt").read_text(encoding="utf-8")
+    ingest = client.post("/v1/jd/ingest", json={"source_type": "paste", "text": jd})
+    assert ingest.status_code == 200
+    app_id = ingest.json()["application"]["id"]
+
+    gen = client.post(
+        "/v1/generate",
+        json={
+            "application_id": app_id,
+            "types": ["cover", "email", "resume", "interview", "linkedin"],
+        },
+    )
+    assert gen.status_code == 200, gen.text
+    payload = gen.json()
+    assert payload["generation"]["types"] == [
+        "cover",
+        "email",
+        "resume",
+        "interview",
+        "linkedin",
+    ]
+    # Batched LLM calls — more than one prompt for five types
+    assert len(client.llm.calls) >= 3  # type: ignore[attr-defined]
+    content = client.get(
+        f"/v1/applications/{app_id}/generations/{payload['generation']['id']}"
+    ).json()["content"]
+    low = content.lower()
+    assert "## cover letter" in low
+    assert "## email" in low
+    assert "## resume" in low
+    assert "## interview prep" in low
+    assert "## linkedin dm" in low

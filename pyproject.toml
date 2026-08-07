@@ -52,9 +52,6 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["sprucer"]
-omit = [
-  "*/sprucer/cli/main.py",
-]
 
 [tool.coverage.report]
 fail_under = 80

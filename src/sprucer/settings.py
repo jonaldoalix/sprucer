@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     dev_password: str = "sprucer-dev"
     api_keys: str = ""
     session_secret: str = "sprucer-dev-session-change-me"
+    # Lab override: allow auth_mode=dev|none when binding 0.0.0.0 (never for public internet).
+    allow_insecure_dev: bool = False
+    # Set true behind HTTPS so session cookies get the Secure flag.
+    cookie_secure: bool = False
+    # Set false in production if you do not want /docs and /redoc public.
+    docs_enabled: bool = True
 
     llm_url: str = "http://127.0.0.1:4000/v1"
     llm_api_key: str = ""

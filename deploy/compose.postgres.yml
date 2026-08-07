@@ -1,0 +1,47 @@
+# Postgres-backed brain (no web UI). Useful for Dockge / CI smoke.
+#
+#   docker compose -f deploy/compose.postgres.yml --env-file .env up --build
+#
+# Brain listens on host port 8788. Default auth is still local-dev — override for real deploys.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sprucer
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-sprucer}"
+      POSTGRES_DB: sprucer
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sprucer -d sprucer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - sprucer-pg:/var/lib/postgresql/data
+
+  brain:
+    build:
+      context: ..
+      dockerfile: Dockerfile.brain
+    ports:
+      - "8788:8787"
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_DATABASE_URL: "postgresql+psycopg://sprucer:${POSTGRES_PASSWORD:-sprucer}@db:5432/sprucer"
+      SPRUCER_AUTH_MODE: "${SPRUCER_AUTH_MODE:-dev}"
+      SPRUCER_ALLOW_INSECURE_DEV: "${SPRUCER_ALLOW_INSECURE_DEV:-1}"
+      SPRUCER_DEV_PASSWORD: "${SPRUCER_DEV_PASSWORD:?set SPRUCER_DEV_PASSWORD}"
+      SPRUCER_SESSION_SECRET: "${SPRUCER_SESSION_SECRET:?set SPRUCER_SESSION_SECRET}"
+      SPRUCER_LLM_URL: "${SPRUCER_LLM_URL:-http://host.docker.internal:4000/v1}"
+      SPRUCER_LLM_API_KEY: "${SPRUCER_LLM_API_KEY:-sk-local-mock}"
+      SPRUCER_LLM_MODEL: "${SPRUCER_LLM_MODEL:-mock-sprucer}"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  sprucer-pg:

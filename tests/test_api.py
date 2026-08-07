@@ -22,8 +22,10 @@ def client(tmp_path: Path):
     settings = Settings(
         database_url=f"sqlite:///{db}",
         auth_mode="dev",
+        host="127.0.0.1",
+        allow_insecure_dev=False,
         dev_password="test-pass",
-        session_secret="test-secret",
+        session_secret="test-secret-not-default-value",
         llm_url="http://example.invalid/v1",
         llm_api_key="test",
         llm_model="mock",

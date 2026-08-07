@@ -53,7 +53,6 @@ start_if_needed web 3737 bash -lc "cd '$ROOT/web' && npm run dev --cache '$ROOT/
 
 echo
 echo "Sprucer lab stack:"
-echo "  local     http://127.0.0.1:3737"
-echo "  tailscale http://100.64.0.5:3737"
-echo "  brain     http://127.0.0.1:8787  (proxied via /v1 from the web UI)"
-echo "  mock llm  http://127.0.0.1:4000/v1"
+echo "  local  http://127.0.0.1:3737"
+echo "  brain  http://127.0.0.1:8787  (proxied via /v1 from the web UI)"
+echo "  mock   http://127.0.0.1:4000/v1"

@@ -1,0 +1,54 @@
+# Local single-node stack (SQLite) — anyone with Docker can run this.
+#
+#   cp .env.example .env
+#   # set SPRUCER_DEV_PASSWORD + SPRUCER_SESSION_SECRET to unique values
+#   docker compose up --build
+#
+# Open http://127.0.0.1:3737 and log in with SPRUCER_DEV_PASSWORD.
+#
+# This is for laptop / trusted LAN only. For OIDC / Postgres / Authentik see deploy/.
+
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: Dockerfile.brain
+    ports:
+      - "8787:8787"
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_PORT: "8787"
+      SPRUCER_DATABASE_URL: "sqlite:////data/sprucer.db"
+      # Shared-password auth is local-only. Required because the container binds 0.0.0.0.
+      SPRUCER_AUTH_MODE: "${SPRUCER_AUTH_MODE:-dev}"
+      SPRUCER_ALLOW_INSECURE_DEV: "${SPRUCER_ALLOW_INSECURE_DEV:-1}"
+      SPRUCER_DEV_PASSWORD: "${SPRUCER_DEV_PASSWORD:?set SPRUCER_DEV_PASSWORD in .env}"
+      SPRUCER_SESSION_SECRET: "${SPRUCER_SESSION_SECRET:?set SPRUCER_SESSION_SECRET in .env}"
+      SPRUCER_COOKIE_SECURE: "${SPRUCER_COOKIE_SECURE:-0}"
+      SPRUCER_DOCS_ENABLED: "${SPRUCER_DOCS_ENABLED:-1}"
+      SPRUCER_LLM_URL: "${SPRUCER_LLM_URL:-http://host.docker.internal:4000/v1}"
+      SPRUCER_LLM_API_KEY: "${SPRUCER_LLM_API_KEY:-sk-change-me}"
+      SPRUCER_LLM_MODEL: "${SPRUCER_LLM_MODEL:-qwen-coder}"
+      SPRUCER_CORS_ORIGINS: "${SPRUCER_CORS_ORIGINS:-http://127.0.0.1:3737,http://localhost:3737}"
+    volumes:
+      - sprucer-data:/data
+    extra_hosts:
+      # Lets Linux Docker reach an LLM on the host (Docker Desktop already provides this).
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3737:3737"
+    environment:
+      # Server-side proxy target (container network).
+      SPRUCER_PUBLIC_URL: "http://brain:8787"
+      # Browser-facing hint only; the UI proxies /v1 through Next.
+      NEXT_PUBLIC_SPRUCER_API_URL: "http://127.0.0.1:8787"
+    depends_on:
+      - brain
+
+volumes:
+  sprucer-data:

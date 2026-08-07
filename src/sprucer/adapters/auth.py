@@ -51,9 +51,10 @@ class DevAuth:
     mode = "dev"
     cookie_name = "sprucer_session"
 
-    def __init__(self, *, password: str, secret: str) -> None:
+    def __init__(self, *, password: str, secret: str, cookie_secure: bool = False) -> None:
         self.password = password
         self.secret = secret.encode("utf-8")
+        self.cookie_secure = cookie_secure
 
     def _token(self) -> str:
         digest = hmac.new(self.secret, self.password.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -63,7 +64,8 @@ class DevAuth:
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1].strip()
-            if hmac.compare_digest(token, self._token()) or token == self.password:
+            # Accept only the HMAC session token — never the raw password as Bearer.
+            if hmac.compare_digest(token, self._token()):
                 return AuthContext(subject="dev", mode=self.mode)
         cookie = request.cookies.get(self.cookie_name)
         if cookie and hmac.compare_digest(cookie, self._token()):
@@ -79,6 +81,7 @@ class DevAuth:
             token,
             httponly=True,
             samesite="lax",
+            secure=self.cookie_secure,
             max_age=60 * 60 * 24 * 14,
             path="/",
         )
@@ -133,6 +136,7 @@ class OidcAuth:
         session_secret: str,
         api_keys: set[str] | None = None,
         post_login_redirect: str = "http://127.0.0.1:3737/applications",
+        cookie_secure: bool = False,
     ) -> None:
         if not issuer or not client_id:
             raise RuntimeError("OIDC requires SPRUCER_OIDC_ISSUER and SPRUCER_OIDC_CLIENT_ID")
@@ -146,6 +150,7 @@ class OidcAuth:
         self.api_keys = api_keys or set()
         self.redirect_uri = redirect_uri
         self.post_login_redirect = post_login_redirect
+        self.cookie_secure = cookie_secure
 
     def authenticate(self, request: Request) -> AuthContext:
         auth = request.headers.get("authorization") or ""
@@ -188,6 +193,7 @@ class OidcAuth:
             token,
             httponly=True,
             samesite="lax",
+            secure=self.cookie_secure,
             max_age=60 * 60 * 24 * 14,
             path="/",
         )
@@ -205,6 +211,7 @@ def create_auth(
     oidc_client_secret: str = "",
     oidc_redirect_uri: str = "http://127.0.0.1:3737/v1/auth/oidc/callback",
     oidc_post_login_redirect: str = "http://127.0.0.1:3737/applications",
+    cookie_secure: bool = False,
 ) -> AuthAdapter:
     mode = (mode or "dev").strip().lower()
     secret = session_secret or secrets.token_hex(16)
@@ -223,5 +230,10 @@ def create_auth(
             session_secret=secret,
             api_keys=api_keys,
             post_login_redirect=oidc_post_login_redirect,
+            cookie_secure=cookie_secure,
         )
-    return DevAuth(password=dev_password or "sprucer-dev", secret=secret)
+    return DevAuth(
+        password=dev_password or "sprucer-dev",
+        secret=secret,
+        cookie_secure=cookie_secure,
+    )

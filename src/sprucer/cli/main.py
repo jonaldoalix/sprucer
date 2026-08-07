@@ -18,9 +18,11 @@ def _client(base_url: str, password: str | None, api_key: str | None) -> httpx.C
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    elif password:
-        headers["Authorization"] = f"Bearer {password}"
-    return httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=180.0, trust_env=False)
+    client = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=180.0, trust_env=False)
+    if password and not api_key:
+        res = client.post("/v1/auth/login", json={"password": password})
+        res.raise_for_status()
+    return client
 
 
 def _base(

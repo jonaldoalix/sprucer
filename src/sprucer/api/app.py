@@ -12,6 +12,7 @@ from sprucer.adapters.auth import AuthAdapter, AuthContext, OidcAuth, create_aut
 from sprucer.adapters.llm import OpenAICompatLlm
 from sprucer.adapters.oidc import new_state
 from sprucer.adapters.storage import create_storage
+from sprucer.security import validate_runtime_settings
 from sprucer.service import CareerService
 from sprucer.settings import Settings, get_settings
 
@@ -80,6 +81,7 @@ def build_app(
     auth: AuthAdapter | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    validate_runtime_settings(settings)
     if service is None:
         store = create_storage(settings.database_url)
         llm = OpenAICompatLlm(
@@ -99,9 +101,12 @@ def build_app(
             oidc_client_secret=settings.oidc_client_secret,
             oidc_redirect_uri=settings.oidc_redirect_uri,
             oidc_post_login_redirect=settings.oidc_post_login_redirect,
+            cookie_secure=settings.cookie_secure,
         )
 
-    app = FastAPI(title="Sprucer", version="0.1.0", docs_url="/docs", redoc_url="/redoc")
+    docs_url = "/docs" if settings.docs_enabled else None
+    redoc_url = "/redoc" if settings.docs_enabled else None
+    app = FastAPI(title="Sprucer", version="0.1.0", docs_url=docs_url, redoc_url=redoc_url)
     app.state.settings = settings
     app.state.service = service
     app.state.auth = auth
@@ -153,6 +158,7 @@ def build_app(
             state,
             httponly=True,
             samesite="lax",
+            secure=bool(getattr(auth, "cookie_secure", False)),
             max_age=600,
             path="/",
         )
@@ -163,6 +169,7 @@ def build_app(
             state,
             httponly=True,
             samesite="lax",
+            secure=bool(getattr(auth, "cookie_secure", False)),
             max_age=600,
             path="/",
         )
@@ -338,15 +345,19 @@ def build_app(
     return app
 
 
-app = build_app()
+# ASGI factory for uvicorn / containers. Security checks run inside build_app().
+def create_app() -> FastAPI:
+    return build_app()
 
 
 def run() -> None:
     import uvicorn
 
     settings = get_settings()
+    validate_runtime_settings(settings)
     uvicorn.run(
-        "sprucer.api.app:app",
+        "sprucer.api.app:create_app",
+        factory=True,
         host=settings.host,
         port=settings.port,
         reload=False,

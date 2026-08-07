@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Fraunces, Figtree } from "next/font/google";
 import Link from "next/link";
 import { SiteNav } from "@/components/SiteNav";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import "./globals.css";
 
 const display = Fraunces({
@@ -21,10 +22,13 @@ export const metadata: Metadata = {
   description: "Truth-first application materials desk",
 };
 
+const themeBootScript = `(function(){try{var t=localStorage.getItem("sprucer-theme");if(t==="light"||t==="neutral"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}else{document.documentElement.setAttribute("data-theme","light");}}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable}`}>
+    <html lang="en" className={`${display.variable} ${body.variable}`} suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
         <link rel="stylesheet" href="/theme.override.css" />
       </head>
       <body
@@ -40,7 +44,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link className="brand" href="/">
               Spruc<span>er</span>
             </Link>
-            <SiteNav />
+            <div className="topbar-right">
+              <ThemeToggle />
+              <SiteNav />
+            </div>
           </header>
           <main className="main">{children}</main>
         </div>

@@ -297,12 +297,38 @@ class CareerService:
         return {"ok": True, "application": saved, "jdChars": len(jd_text)}
 
     async def _fetch_url_text(self, fetch_url: str) -> tuple[str, dict[str, str]]:
+        from urllib.parse import urljoin
+
+        from sprucer.ssrf import UnsafeUrlError, assert_public_http_url
+
         headers = {"User-Agent": "Sprucer/0.1 (+https://github.com/Full-Stack-Boston/sprucer)"}
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True, trust_env=False) as client:
-            try:
-                res = await client.get(fetch_url, headers=headers)
-            except httpx.RequestError as exc:
-                raise RuntimeError(f"URL fetch failed: {exc}") from exc
+        try:
+            current = assert_public_http_url(fetch_url)
+        except UnsafeUrlError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        # Manual redirect following so each hop is re-checked (SSRF).
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False, trust_env=False) as client:
+            res: httpx.Response | None = None
+            for _ in range(6):
+                try:
+                    res = await client.get(current, headers=headers)
+                except httpx.RequestError as exc:
+                    raise RuntimeError(f"URL fetch failed: {exc}") from exc
+                if res.is_redirect:
+                    loc = res.headers.get("location")
+                    if not loc:
+                        raise RuntimeError("URL fetch redirect missing Location")
+                    nxt = urljoin(str(res.url), loc)
+                    try:
+                        current = assert_public_http_url(nxt)
+                    except UnsafeUrlError as exc:
+                        raise RuntimeError(str(exc)) from exc
+                    continue
+                break
+            else:
+                raise RuntimeError("URL fetch exceeded redirect limit")
+            assert res is not None
             if res.status_code in {401, 403}:
                 raise RuntimeError(
                     f"Job site returned HTTP {res.status_code}. Paste the JD text or upload a file instead."

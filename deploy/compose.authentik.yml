@@ -1,0 +1,78 @@
+# Example: Sprucer + Authentik (in-house IdP) + Postgres.
+#
+# This file is a starting sketch — Authentik itself has many deploy variants.
+# Prefer running Authentik from its upstream compose, then point Sprucer at it
+# with deploy/compose.oidc.yml. Use this file when you want a single lab stack.
+#
+# Steps:
+#   1. Bring up Authentik (or use an existing instance)
+#   2. Create a Confidential OAuth2/OIDC provider + application named "Sprucer"
+#   3. Set redirect URI to https://sprucer.example.com/v1/auth/oidc/callback
+#      (or http://127.0.0.1:3737/v1/auth/oidc/callback for local HTTPS-less labs)
+#   4. Copy client id/secret into .env.authentik
+#   5. docker compose -f deploy/compose.authentik.yml --env-file .env.authentik up --build
+#
+# Issuer examples (adjust to your Authentik slug):
+#   https://auth.example.com/application/o/sprucer/
+#   https://authentik.lab/application/o/sprucer/
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sprucer
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: sprucer
+    volumes:
+      - sprucer-authentik-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sprucer -d sprucer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  brain:
+    build:
+      context: ..
+      dockerfile: Dockerfile.brain
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_DATABASE_URL: "postgresql+psycopg://sprucer:${POSTGRES_PASSWORD}@db:5432/sprucer"
+      SPRUCER_AUTH_MODE: "oidc"
+      SPRUCER_SESSION_SECRET: "${SPRUCER_SESSION_SECRET}"
+      SPRUCER_COOKIE_SECURE: "${SPRUCER_COOKIE_SECURE:-1}"
+      SPRUCER_DOCS_ENABLED: "0"
+      SPRUCER_CORS_ORIGINS: "${SPRUCER_CORS_ORIGINS}"
+      # Authentik application issuer URL (must end with / for many setups)
+      SPRUCER_OIDC_ISSUER: "${SPRUCER_OIDC_ISSUER}"
+      SPRUCER_OIDC_CLIENT_ID: "${SPRUCER_OIDC_CLIENT_ID}"
+      SPRUCER_OIDC_CLIENT_SECRET: "${SPRUCER_OIDC_CLIENT_SECRET}"
+      SPRUCER_OIDC_REDIRECT_URI: "${SPRUCER_OIDC_REDIRECT_URI}"
+      SPRUCER_OIDC_POST_LOGIN_REDIRECT: "${SPRUCER_OIDC_POST_LOGIN_REDIRECT}"
+      SPRUCER_LLM_URL: "${SPRUCER_LLM_URL}"
+      SPRUCER_LLM_API_KEY: "${SPRUCER_LLM_API_KEY}"
+      SPRUCER_LLM_MODEL: "${SPRUCER_LLM_MODEL}"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    environment:
+      SPRUCER_PUBLIC_URL: "http://brain:8787"
+      NEXT_PUBLIC_SPRUCER_API_URL: "${PUBLIC_WEB_ORIGIN}"
+    depends_on:
+      - brain
+    ports:
+      - "${WEB_HOST_PORT:-3737}:3737"
+
+  # Optional: omit this service and use an existing Authentik. Included as a
+  # reminder that IdP is separate from Sprucer data.
+  # authentik-server:
+  #   image: ghcr.io/goauthentik/server:2024.8.3
+  #   ... see https://docs.goauthentik.io/docs/installation/docker-compose
+
+volumes:
+  sprucer-authentik-pg:

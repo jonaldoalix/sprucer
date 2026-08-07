@@ -542,9 +542,7 @@ class CareerService:
             if any(h == "cover letter" or h.startswith("cover letter") for h in headings):
                 if artifact_types == ["email"]:
                     return False
-            if artifact_types == ["email"] and "subject:" not in low and not any(
-                h == "email" or h.startswith("email") for h in headings
-            ):
+            if artifact_types == ["email"] and "subject:" not in low:
                 return False
         if "linkedin" in artifact_types:
             profile_advice_markers = (

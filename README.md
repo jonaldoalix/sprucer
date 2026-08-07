@@ -79,7 +79,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/AUTH.md](docs/AUTH.md), 
 ## Development
 
 ```bash
-pytest -q --cov=sprucer --cov-fail-under=80
+pytest -q --cov=sprucer --cov-fail-under=100
 ruff check src tests
 ```
 

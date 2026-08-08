@@ -278,6 +278,37 @@ class SqlAlchemyStorage:
             session.delete(row)
             session.commit()
 
+    def purge_owner_prefix(self, prefix: str, older_than: datetime) -> int:
+        """Delete truth + applications for owners matching ``prefix`` last touched before ``older_than``.
+
+        Used to sweep stale per-session demo vaults. Returns the number of owners purged.
+        """
+        prefix = (prefix or "").strip()
+        if not prefix:
+            return 0
+        like = prefix.replace("%", r"\%").replace("_", r"\_") + "%"
+        purged = 0
+        with self._Session() as session:
+            apps = session.scalars(
+                select(ApplicationRow).where(
+                    ApplicationRow.owner_subject.like(like, escape="\\"),
+                    ApplicationRow.updated_at < older_than,
+                )
+            ).all()
+            for row in apps:
+                session.delete(row)
+            truths = session.scalars(
+                select(TruthRow).where(
+                    TruthRow.owner_subject.like(like, escape="\\"),
+                    TruthRow.updated_at < older_than,
+                )
+            ).all()
+            for row in truths:
+                session.delete(row)
+                purged += 1
+            session.commit()
+        return purged
+
     def get_jd(self, application_id: str, owner: str = SHARED_OWNER) -> str:
         owner = owner or SHARED_OWNER
         with self._Session() as session:

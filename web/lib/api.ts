@@ -10,10 +10,36 @@ export function apiBase(): string {
   );
 }
 
+export const BYOK_KEYS = {
+  base: "sprucer-byok-base",
+  key: "sprucer-byok-key",
+  model: "sprucer-byok-model",
+} as const;
+
+/** Which demo backend the visitor chose at the start gate: "offline" | "byok". */
+export const DEMO_CHOICE_KEY = "sprucer-demo-choice";
+
+export function demoChoice(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(DEMO_CHOICE_KEY) || "";
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) {
     headers.set("Content-Type", "application/json");
+  }
+  // Bring-your-own-key: forward the visitor's own provider on generate calls only.
+  // Credentials live in the browser (localStorage) and are never persisted server-side.
+  if (typeof window !== "undefined" && path === "/v1/generate") {
+    const base = window.localStorage.getItem(BYOK_KEYS.base) || "";
+    const key = window.localStorage.getItem(BYOK_KEYS.key) || "";
+    const model = window.localStorage.getItem(BYOK_KEYS.model) || "";
+    if (base && key) {
+      headers.set("X-LLM-Base-Url", base);
+      headers.set("X-LLM-Api-Key", key);
+      if (model) headers.set("X-LLM-Model", model);
+    }
   }
   const res = await fetch(`${apiBase()}${path}`, {
     ...init,

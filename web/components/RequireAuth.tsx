@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, demoChoice } from "@/lib/api";
 
 export type SessionAuth =
   | { status: "loading" }
@@ -29,6 +29,23 @@ export function useSessionAuth(): SessionAuth {
           mode: String(me.mode || mode),
         });
       } catch {
+        // Demo mode mints an anonymous per-session vault automatically once the
+        // visitor has picked a backend at the start gate (offline or BYO).
+        if (mode === "demo" && demoChoice()) {
+          try {
+            await apiFetch("/v1/auth/login", { method: "POST", body: JSON.stringify({}) });
+            const me = (await apiFetch("/v1/auth/whoami")) as { subject?: string; mode?: string };
+            setAuth({
+              status: "signed-in",
+              subject: String(me.subject || "demo"),
+              mode: String(me.mode || mode),
+            });
+            return;
+          } catch {
+            setAuth({ status: "need-login", mode });
+            return;
+          }
+        }
         setAuth({ status: "need-login", mode });
       }
     } catch {

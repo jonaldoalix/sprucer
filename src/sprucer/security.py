@@ -28,6 +28,11 @@ def validate_runtime_settings(settings: Settings) -> list[str]:
             "SPRUCER_SESSION_SECRET is still the example default — set a long random value."
         )
 
+    if mode == "demo":
+        warnings_out.append(
+            "auth_mode=demo: anonymous per-session sandbox vaults; do not store real data."
+        )
+
     if mode == "dev":
         if settings.dev_password == DEFAULT_DEV_PASSWORD:
             warnings_out.append(

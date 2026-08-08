@@ -27,6 +27,18 @@ Open http://127.0.0.1:3737 — log in with `SPRUCER_DEV_PASSWORD`.
 
 More recipes (Postgres, OIDC, Authentik-oriented) live under [`deploy/`](deploy/README.md). Compose files include inline `#` comments.
 
+## Self-contained demo (no external calls or costs)
+
+```bash
+docker compose -f deploy/compose.demo.yml up --build
+```
+
+Open http://127.0.0.1:3737. A start gate asks each visitor how they want to try Sprucer, then unlocks the full workflow:
+
+- **Explore the demo (offline).** Drafts are written by a built-in generator grounded in the vault — no LLM provider, no API keys, no cost, and nothing leaves the containers. Outbound job-URL ingest is disabled (paste/upload only).
+- **Bring your own AI.** With `SPRUCER_BYOK_ENABLED=1`, the gate prompts for ephemeral OpenAI-compatible credentials and unlocks real generation. The key stays in the browser and is proxied per request — never stored server-side, and validated against SSRF (public https only, optional host allowlist). See [`deploy/env.demo.example`](deploy/env.demo.example).
+- **Per-visitor sandbox.** Each browser gets its own temporary, isolated vault, auto-seeded with a sample knowledge bank + application and auto-expired after `SPRUCER_DEMO_TTL_HOURS`. The SQLite file lives on tmpfs, so a restart is a clean slate. A status strip shows the active backend and lets visitors change setup.
+
 ## Quick start (local Python + Next)
 
 ```bash
@@ -55,7 +67,7 @@ Optional helper that starts mock LLM + brain + web if they are not already runni
 | Variable | Purpose |
 |----------|---------|
 | `SPRUCER_DATABASE_URL` | Default `sqlite:///./data/sprucer.db`. Postgres: `postgresql+psycopg://user:pass@host/db` |
-| `SPRUCER_AUTH_MODE` | `dev` (local only) \| `none` \| `oidc` \| `api_key` |
+| `SPRUCER_AUTH_MODE` | `dev` (local only) \| `none` \| `oidc` \| `api_key` \| `demo` |
 | `SPRUCER_DEV_PASSWORD` | Shared password when `auth_mode=dev` |
 | `SPRUCER_SESSION_SECRET` | HMAC secret for session cookies — **change this** |
 | `SPRUCER_ALLOW_INSECURE_DEV` | `1` to allow `dev`/`none` while binding `0.0.0.0` (lab/Docker only) |
@@ -64,6 +76,11 @@ Optional helper that starts mock LLM + brain + web if they are not already runni
 | `SPRUCER_LLM_URL` | OpenAI-compatible base (e.g. `http://127.0.0.1:4000/v1`) |
 | `SPRUCER_LLM_API_KEY` | Bearer token for the LLM endpoint |
 | `SPRUCER_LLM_MODEL` | Model id (e.g. `qwen-coder`, `gpt-4o-mini`) |
+| `SPRUCER_DEMO` | `1` for a self-contained demo: offline generator, per-session vaults |
+| `SPRUCER_DEMO_TTL_HOURS` | Sweep stale per-session demo vaults older than this (default `24`) |
+| `SPRUCER_INGEST_URL_ENABLED` | `0` to disable outbound job-URL ingest (paste/upload only) |
+| `SPRUCER_BYOK_ENABLED` | `1` to let a visitor proxy generation through their own provider |
+| `SPRUCER_BYOK_ALLOWED_HOSTS` | Optional provider host allowlist for BYO keys (empty = any public https) |
 | `SPRUCER_OIDC_*` | Issuer / client / secret / redirect when `auth_mode=oidc` |
 | `SPRUCER_CORS_ORIGINS` | Comma-separated browser origins |
 

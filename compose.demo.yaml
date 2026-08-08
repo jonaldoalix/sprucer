@@ -1,0 +1,43 @@
+# Dockge / deploy-root compose for the self-contained Sprucer demo.
+# Place the full repo at /opt/stacks/sprucer-demo and run this file as compose.yaml
+# (or: docker compose -f compose.demo.yaml up -d --build).
+#
+# fsb-03: web on Tailscale :8096 → NPM → https://sprucer.fullstackboston.com
+
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: Dockerfile.brain
+    expose:
+      - "8787"
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_PORT: "8787"
+      SPRUCER_DATABASE_URL: "sqlite:////data/sprucer.db"
+      SPRUCER_DEMO: "1"
+      SPRUCER_AUTH_MODE: "demo"
+      SPRUCER_INGEST_URL_ENABLED: "0"
+      SPRUCER_DEMO_TTL_HOURS: "${SPRUCER_DEMO_TTL_HOURS:-24}"
+      SPRUCER_BYOK_ENABLED: "${SPRUCER_BYOK_ENABLED:-1}"
+      SPRUCER_BYOK_ALLOWED_HOSTS: "${SPRUCER_BYOK_ALLOWED_HOSTS:-}"
+      SPRUCER_SESSION_SECRET: "${SPRUCER_SESSION_SECRET:?set SPRUCER_SESSION_SECRET}"
+      SPRUCER_COOKIE_SECURE: "${SPRUCER_COOKIE_SECURE:-1}"
+      SPRUCER_DOCS_ENABLED: "${SPRUCER_DOCS_ENABLED:-0}"
+      SPRUCER_CORS_ORIGINS: "${SPRUCER_CORS_ORIGINS:-https://sprucer.fullstackboston.com}"
+    tmpfs:
+      - /data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "${SPRUCER_WEB_BIND:-100.64.0.7:8096}:3737"
+    environment:
+      SPRUCER_PUBLIC_URL: "http://brain:8787"
+      NEXT_PUBLIC_SPRUCER_API_URL: "https://sprucer.fullstackboston.com"
+    depends_on:
+      - brain
+    restart: unless-stopped

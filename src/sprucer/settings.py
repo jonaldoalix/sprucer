@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "qwen-coder"
 
+    # Demo mode: self-contained, no external calls or costs. Uses the offline
+    # DemoLlm, per-session ephemeral vaults, and disables outbound URL ingest.
+    demo: bool = False
+    demo_ttl_hours: int = 24
+    # Allow outbound job-URL fetches during ingest (disabled by demo compose).
+    ingest_url_enabled: bool = True
+    # Let a visitor supply their own OpenAI-compatible provider per request.
+    byok_enabled: bool = False
+    # Optional allowlist of provider hosts for BYO keys (comma-separated). Empty = any public https host.
+    byok_allowed_hosts: str = ""
+
     oidc_issuer: str = ""
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
@@ -44,6 +55,9 @@ class Settings(BaseSettings):
 
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    def byok_allowed_host_set(self) -> set[str]:
+        return {h.strip().lower() for h in self.byok_allowed_hosts.split(",") if h.strip()}
 
 
 @lru_cache

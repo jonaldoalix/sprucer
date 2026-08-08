@@ -3,6 +3,8 @@ import { Fraunces, Figtree } from "next/font/google";
 import Link from "next/link";
 import { SiteNav } from "@/components/SiteNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { DemoBar } from "@/components/DemoBar";
+import { DemoGate } from "@/components/DemoGate";
 import "./globals.css";
 
 const display = Fraunces({
@@ -39,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           } as React.CSSProperties
         }
       >
+        <DemoGate />
         <div className="app-shell">
           <header className="topbar">
             <Link className="brand" href="/">
@@ -49,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <SiteNav />
             </div>
           </header>
+          <DemoBar />
           <main className="main">{children}</main>
         </div>
       </body>

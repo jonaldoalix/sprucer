@@ -46,6 +46,50 @@ class NoneAuth:
         return {"mode": self.mode, "dev_login": False, "oidc_login": False}
 
 
+class DemoAuth:
+    """Anonymous per-session auth for public demos.
+
+    Each browser gets a random signed subject on login (no password), which the
+    tenancy layer turns into an isolated ephemeral vault. Paired with a TTL sweep
+    so the demo self-cleans.
+    """
+
+    mode = "demo"
+    cookie_name = "sprucer_session"
+
+    def __init__(self, *, session_secret: str, cookie_secure: bool = False) -> None:
+        self.session_secret = session_secret
+        self.cookie_secure = cookie_secure
+
+    def authenticate(self, request: Request) -> AuthContext:
+        cookie = request.cookies.get(self.cookie_name)
+        if cookie:
+            sub = verify_session(self.session_secret, cookie)
+            if sub:
+                return AuthContext(subject=sub, mode=self.mode)
+        raise HTTPException(status_code=401, detail="Demo session required")
+
+    def login(self, response: Response, *, password: str | None = None, api_key: str | None = None) -> AuthContext:
+        subject = f"demo-{secrets.token_hex(8)}"
+        token = sign_session(self.session_secret, subject)
+        response.set_cookie(
+            self.cookie_name,
+            token,
+            httponly=True,
+            samesite="lax",
+            secure=self.cookie_secure,
+            max_age=60 * 60 * 24,
+            path="/",
+        )
+        return AuthContext(subject=subject, mode=self.mode)
+
+    def logout(self, response: Response) -> None:
+        response.delete_cookie(self.cookie_name, path="/")
+
+    def public_config(self) -> dict:
+        return {"mode": self.mode, "dev_login": False, "oidc_login": False, "demo": True}
+
+
 class DevAuth:
     """Shared-password local auth. Unsafe for internet exposure."""
 
@@ -218,6 +262,8 @@ def create_auth(
     secret = session_secret or secrets.token_hex(16)
     if mode == "none":
         return NoneAuth()
+    if mode == "demo":
+        return DemoAuth(session_secret=secret, cookie_secure=cookie_secure)
     if mode == "api_key":
         if not api_keys:
             raise RuntimeError("SPRUCER_API_KEYS required when auth_mode=api_key")

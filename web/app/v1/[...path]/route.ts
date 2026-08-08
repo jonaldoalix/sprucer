@@ -104,7 +104,10 @@ async function proxy(req: NextRequest, pathParts: string[]) {
     for (const c of pickSetCookies(upstream.headers)) {
       out.append("set-cookie", c);
     }
-    return new NextResponse(upstream.body, { status: upstream.status, headers: out });
+    return new NextResponse(new Uint8Array(upstream.body), {
+      status: upstream.status,
+      headers: out,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const timedOut = /timed out/i.test(msg);

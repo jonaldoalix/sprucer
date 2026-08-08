@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import RedirectResponse
 
 from sprucer.adapters.auth import AuthAdapter, AuthContext, OidcAuth, create_auth
-from sprucer.adapters.llm import OpenAICompatLlm
+from sprucer.adapters.llm import DemoLlm, OpenAICompatLlm, make_byok_llm, probe_byok_llm
 from sprucer.adapters.oidc import new_state
 from sprucer.adapters.storage import create_storage
 from sprucer.security import validate_runtime_settings
@@ -63,6 +63,12 @@ class GenerateBody(BaseModel):
     custom_type: str | None = None
 
 
+class ByokProbeBody(BaseModel):
+    base_url: str
+    api_key: str
+    model: str | None = None
+
+
 class ApproveBody(BaseModel):
     application_id: str
     generation_id: str
@@ -85,12 +91,15 @@ def build_app(
     validate_runtime_settings(settings)
     if service is None:
         store = create_storage(settings.database_url)
-        llm = OpenAICompatLlm(
-            base_url=settings.llm_url,
-            api_key=settings.llm_api_key,
-            default_model=settings.llm_model,
-        )
-        service = CareerService(store, llm)
+        if settings.demo:
+            llm: Any = DemoLlm()
+        else:
+            llm = OpenAICompatLlm(
+                base_url=settings.llm_url,
+                api_key=settings.llm_api_key,
+                default_model=settings.llm_model,
+            )
+        service = CareerService(store, llm, ingest_url_enabled=settings.ingest_url_enabled)
     if auth is None:
         auth = create_auth(
             mode=settings.auth_mode,
@@ -137,9 +146,42 @@ def build_app(
     def auth_config() -> dict[str, Any]:
         return {"ok": True, **app.state.auth.public_config()}
 
+    @app.get("/v1/config")
+    def public_config() -> dict[str, Any]:
+        s = app.state.settings
+        return {
+            "ok": True,
+            "demo": bool(s.demo),
+            "byok_enabled": bool(s.byok_enabled),
+            "ingest_url_enabled": bool(s.ingest_url_enabled),
+        }
+
+    @app.post("/v1/llm/probe")
+    async def llm_probe(payload: ByokProbeBody) -> dict[str, Any]:
+        """Validate bring-your-own LLM credentials with a 1-token chat call."""
+        settings = app.state.settings
+        if not settings.byok_enabled:
+            raise HTTPException(status_code=400, detail="Bring-your-own AI is disabled")
+        try:
+            result = await probe_byok_llm(
+                base_url=payload.base_url,
+                api_key=payload.api_key,
+                model=payload.model,
+                allowed_hosts=settings.byok_allowed_host_set() or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, **result}
+
     @app.post("/v1/auth/login")
     def login(payload: LoginBody, response: Response) -> dict[str, Any]:
         ctx = app.state.auth.login(response, password=payload.password, api_key=payload.api_key)
+        if app.state.auth.mode == "demo":
+            owner = owner_for(ctx)
+            app.state.service.demo_cleanup(ttl_hours=app.state.settings.demo_ttl_hours)
+            app.state.service.demo_seed(owner)
         return {"ok": True, "subject": ctx.subject, "mode": ctx.mode}
 
     @app.post("/v1/auth/logout")
@@ -298,15 +340,33 @@ def build_app(
     @app.post("/v1/generate")
     async def generate(
         payload: GenerateBody,
+        request: Request,
         ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
+        llm_override = None
+        settings = app.state.settings
+        if settings.byok_enabled:
+            base = request.headers.get("x-llm-base-url")
+            key = request.headers.get("x-llm-api-key")
+            model = request.headers.get("x-llm-model")
+            if base or key:
+                try:
+                    llm_override = make_byok_llm(
+                        base_url=base or "",
+                        api_key=key or "",
+                        model=model or None,
+                        allowed_hosts=settings.byok_allowed_host_set() or None,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             return await service.generate(
                 application_id=payload.application_id,
                 types=payload.types,
                 custom_type=payload.custom_type,
                 owner=owner_for(ctx),
+                llm_override=llm_override,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

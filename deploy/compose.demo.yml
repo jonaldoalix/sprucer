@@ -1,0 +1,55 @@
+# Self-contained public demo — no external LLM, no AI costs.
+#
+# Local laptop:
+#   docker compose -f deploy/compose.demo.yml up --build
+#   → http://127.0.0.1:3737
+#
+# Dockge on fsb-03 (sprucer.fullstackboston.com):
+#   Stack dir: /opt/stacks/sprucer-demo
+#   Use the root compose.yaml symlink/copy of this file (or set COMPOSE_FILE).
+#   Web binds Tailscale 100.64.0.7:8096 → NPM proxy host sprucer.fullstackboston.com
+#   (wildcard DNS already covers *.fullstackboston.com).
+#
+# Optional: visitors can plug in their OWN OpenAI-compatible provider from the
+# start gate (SPRUCER_BYOK_ENABLED=1). Their key stays in the browser.
+
+services:
+  brain:
+    build:
+      context: ..
+      dockerfile: Dockerfile.brain
+    # No host publish — web reaches brain on the compose network only.
+    expose:
+      - "8787"
+    environment:
+      SPRUCER_HOST: "0.0.0.0"
+      SPRUCER_PORT: "8787"
+      SPRUCER_DATABASE_URL: "sqlite:////data/sprucer.db"
+      SPRUCER_DEMO: "1"
+      SPRUCER_AUTH_MODE: "demo"
+      SPRUCER_INGEST_URL_ENABLED: "0"
+      SPRUCER_DEMO_TTL_HOURS: "${SPRUCER_DEMO_TTL_HOURS:-24}"
+      SPRUCER_BYOK_ENABLED: "${SPRUCER_BYOK_ENABLED:-1}"
+      SPRUCER_BYOK_ALLOWED_HOSTS: "${SPRUCER_BYOK_ALLOWED_HOSTS:-}"
+      SPRUCER_SESSION_SECRET: "${SPRUCER_SESSION_SECRET:?set SPRUCER_SESSION_SECRET}"
+      SPRUCER_COOKIE_SECURE: "${SPRUCER_COOKIE_SECURE:-0}"
+      SPRUCER_DOCS_ENABLED: "${SPRUCER_DOCS_ENABLED:-0}"
+      SPRUCER_CORS_ORIGINS: "${SPRUCER_CORS_ORIGINS:-http://127.0.0.1:3737,http://localhost:3737}"
+    tmpfs:
+      - /data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    ports:
+      # Local default. On fsb-03 Dockge, override in stack .env / compose to:
+      #   "100.64.0.7:8096:3737"
+      - "${SPRUCER_WEB_BIND:-127.0.0.1:3737}:3737"
+    environment:
+      SPRUCER_PUBLIC_URL: "http://brain:8787"
+      NEXT_PUBLIC_SPRUCER_API_URL: "${NEXT_PUBLIC_SPRUCER_API_URL:-http://127.0.0.1:8787}"
+    depends_on:
+      - brain
+    restart: unless-stopped

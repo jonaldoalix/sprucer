@@ -11,6 +11,10 @@
 
 ## Done recently
 
+- [x] Self-contained demo mode (`SPRUCER_DEMO=1`, `deploy/compose.demo.yml`): offline `DemoLlm` generator (no external LLM/cost), anonymous per-session ephemeral vaults with TTL sweep, auto-seeded sample vault, outbound URL ingest disabled
+- [x] Demo start gate: first-run chooser between the offline generator (simulated) and bring-your-own-AI (prompts for ephemeral creds, Test connection via `/v1/llm/probe`, then unlocks real generation), plus a status strip to change setup
+- [x] Dockge demo compose (`compose.demo.yaml`) for fsb-03 / sprucer.fullstackboston.com (Tailscale :8096)
+- [x] Bring-your-own-key proxy (`SPRUCER_BYOK_ENABLED=1`): visitors supply their own OpenAI-compatible provider per request (key stays in the browser, SSRF-guarded https, optional host allowlist)
 - [x] Richer JD ingest: Workday CXS JSON, HTML hero/`job-description` extraction, PDF/DOCX/DOC upload parsing, og:title/`<title>` field hints, URL-dedup (all behind the SSRF guard)
 - [x] Theme modes (light / lichen-slate neutral / dark) + compact select
 - [x] SSRF guards on URL ingest + insecure-dev bind refusal

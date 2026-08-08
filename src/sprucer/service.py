@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 from urllib.parse import urljoin
@@ -280,9 +280,26 @@ def _guess_fields(jd_text: str, *, url: str = "", hints: dict[str, str] | None =
 
 
 class CareerService:
-    def __init__(self, store: SqlAlchemyStorage, llm: LlmAdapter) -> None:
+    def __init__(
+        self, store: SqlAlchemyStorage, llm: LlmAdapter, *, ingest_url_enabled: bool = True
+    ) -> None:
         self.store = store
         self.llm = llm
+        self.ingest_url_enabled = ingest_url_enabled
+
+    def demo_seed(self, owner: str) -> str | None:
+        """Seed a fresh demo vault for ``owner`` if it has no truth yet. Returns the sample app id."""
+        from sprucer.demo import seed_demo_vault
+
+        existing = self.store.get_truth(owner)
+        if existing.get("profile"):
+            return None
+        return seed_demo_vault(self.store, owner)
+
+    def demo_cleanup(self, *, ttl_hours: int, prefix: str = "demo-") -> int:
+        """Sweep stale per-session demo vaults older than ``ttl_hours``."""
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max(1, ttl_hours))
+        return self.store.purge_owner_prefix(prefix, cutoff)
 
     def truth_get(self, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
         truth = self.store.get_truth(owner)
@@ -442,6 +459,10 @@ class CareerService:
             if not jd_text:
                 raise RuntimeError("text is required for paste")
         elif source_type == "url":
+            if not self.ingest_url_enabled:
+                raise RuntimeError(
+                    "URL fetch is disabled in this deployment. Paste the JD text or upload a file instead."
+                )
             if not (url or "").strip():
                 raise RuntimeError("url is required for url ingest")
             jd_text, hints = await self._fetch_url_text(url.strip())
@@ -978,7 +999,9 @@ class CareerService:
         jd_text: str,
         artifact_types: list[str],
         emphasis: list[dict[str, str]],
+        llm: LlmAdapter | None = None,
     ) -> str:
+        llm = llm or self.llm
         cite_catalog = (
             self._interview_cite_catalog(truth) if "interview" in artifact_types else []
         )
@@ -1021,7 +1044,7 @@ class CareerService:
             {"role": "user", "content": json.dumps(user, ensure_ascii=True)},
         ]
         max_tokens = self._max_tokens_for(artifact_types)
-        content = await self.llm.chat(messages, max_tokens=max_tokens)
+        content = await llm.chat(messages, max_tokens=max_tokens)
         if not self._content_satisfies_types(content, artifact_types, cite_ids=cite_ids):
             repair = (
                 "Your previous reply did not match the required artifact format. "
@@ -1042,7 +1065,7 @@ class CareerService:
                     "\nFor LinkedIn DM: write the sendable message only; sign with the real name "
                     f"from careerTruth.profile ({sign or 'profile.name'}), never [Your Name]."
                 )
-            content = await self.llm.chat(
+            content = await llm.chat(
                 messages
                 + [
                     {"role": "assistant", "content": content.strip()[:4000]},
@@ -1065,6 +1088,7 @@ class CareerService:
         types: list[str] | None = None,
         custom_type: str | None = None,
         owner: str = SHARED_OWNER,
+        llm_override: LlmAdapter | None = None,
     ) -> dict[str, Any]:
         app = self.store.get_application(application_id, owner)
         if app is None:
@@ -1086,6 +1110,7 @@ class CareerService:
                 jd_text=jd_text,
                 artifact_types=batch,
                 emphasis=emphasis,
+                llm=llm_override,
             )
             parts.append(part)
         content = "\n\n".join(parts)

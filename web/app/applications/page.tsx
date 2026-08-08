@@ -563,11 +563,11 @@ function ApplicationsDesk() {
 
       {ingestMode === "upload" ? (
         <div className="field">
-          <label htmlFor={`${formId}-file`}>JD file (.txt, .md, .html)</label>
+          <label htmlFor={`${formId}-file`}>JD file (.txt, .md, .html, .pdf, .docx, .doc)</label>
           <input
             id={`${formId}-file`}
             type="file"
-            accept=".txt,.md,.markdown,.html,.htm,text/plain,text/html,text/markdown"
+            accept=".txt,.md,.markdown,.html,.htm,.pdf,.docx,.doc,text/plain,text/html,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
             onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
             required
           />

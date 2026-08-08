@@ -4,7 +4,6 @@
 
 - [ ] Operator final brand sign-off (override via `theme.override.css`)
 - [ ] Point a real IdP at OIDC and click through once (flow is implemented; compose samples in `deploy/`)
-- [ ] URL ingest ATS edge cases (Workday/etc.) if you want lab parity
 - [ ] Confirm LICENSE copyright line
 - [ ] No lab hostnames / personal truth in history
 - [ ] Rate limits on login / generate (not yet)
@@ -12,6 +11,7 @@
 
 ## Done recently
 
+- [x] Richer JD ingest: Workday CXS JSON, HTML hero/`job-description` extraction, PDF/DOCX/DOC upload parsing, og:title/`<title>` field hints, URL-dedup (all behind the SSRF guard)
 - [x] Theme modes (light / lichen-slate neutral / dark) + compact select
 - [x] SSRF guards on URL ingest + insecure-dev bind refusal
 - [x] SECURITY.md, Semgrep CI, pytest coverage gate ≥80%

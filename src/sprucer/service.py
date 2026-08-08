@@ -6,8 +6,12 @@ import json
 import re
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
+from urllib.parse import urljoin
+from xml.etree import ElementTree as ET
 
 import httpx
 
@@ -49,12 +53,47 @@ def _ensure_item_id(item: dict[str, Any], *, prefix: str) -> dict[str, Any]:
     return out
 
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+_NOISE_TITLE_LINES = {
+    "skip to main content",
+    "search jobs",
+    "home",
+    "about us",
+    "apply for this role",
+    "view full job description",
+    "candidate login",
+    "sign in",
+}
+
+_WORKDAY_EMPTY_TAIL = re.compile(
+    r"(?:\n|^)\s*(?:"
+    r"Responsibilities if Required|"
+    r"Education if Required|"
+    r"License/?Registration/?Certification\s*Requirements|"
+    r"Requirements"
+    r")\s*:?\s*$",
+    re.I | re.M,
+)
+
+
 def _strip_html(raw: str) -> str:
     text = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw)
     text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<noscript.*?>.*?</noscript>", " ", text)
+    # Preserve readable structure before nuking tags.
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</(p|div|li|tr|h[1-6]|section|article)>", "\n", text)
+    text = re.sub(r"(?is)<(p|div|h[1-6]|section|article|tr)(\s[^>]*)?>", "\n", text)
+    text = re.sub(r"(?is)<li[^>]*>", "\n- ", text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
     text = html.unescape(text)
+    text = text.replace("\xa0", " ")
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -62,26 +101,182 @@ def _strip_html(raw: str) -> str:
 def _clean_jd_text(text: str) -> str:
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # Drop trailing empty Workday template headers that look like clipped content.
+    prev = None
+    while prev != text:
+        prev = text
+        text = _WORKDAY_EMPTY_TAIL.sub("", text).rstrip(" \n\t:")
     return text.strip()[:24000]
+
+
+def _meta_content(raw: str, *keys: str) -> str:
+    for key in keys:
+        patterns = [
+            rf'(?is)<meta[^>]+property=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'(?is)<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(key)}["\']',
+            rf'(?is)<meta[^>]+name=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'(?is)<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(key)}["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, raw)
+            if m:
+                return html.unescape(m.group(1)).strip()
+    return ""
+
+
+def _extract_html_jd(raw: str) -> tuple[str, dict[str, str]]:
+    """Prefer job-description / hero blocks over whole-page chrome."""
+    fields: dict[str, str] = {"company": "", "title": "", "location": ""}
+    title_tag = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
+    if title_tag:
+        title_full = html.unescape(re.sub(r"\s+", " ", title_tag.group(1))).strip()
+        parts = [p.strip() for p in title_full.split("|") if p.strip()]
+        if parts:
+            fields["title"] = parts[0][:120]
+        if len(parts) >= 2:
+            fields["location"] = parts[1][:120]
+        if len(parts) >= 3:
+            fields["company"] = parts[2][:120]
+
+    og_title = _meta_content(raw, "og:title")
+    if og_title:
+        m = re.match(r"^(.*?)\s+at\s+(.+)$", og_title, re.I)
+        if m:
+            fields["title"] = fields["title"] or m.group(1).strip()[:120]
+            fields["company"] = fields["company"] or m.group(2).strip()[:120]
+        elif not fields["title"]:
+            fields["title"] = og_title[:120]
+
+    hero = re.search(
+        r'(?is)<h1[^>]*class=["\'][^"\']*hero-title[^"\']*["\'][^>]*>\s*(?:<span>)?(.*?)(?:</span>)?\s*</h1>',
+        raw,
+    )
+    if hero:
+        fields["title"] = (
+            html.unescape(re.sub(r"<[^>]+>", "", hero.group(1))).strip()[:120] or fields["title"]
+        )
+
+    loc = re.search(
+        r'(?is)class=["\'][^"\']*meta-location[^"\']*["\'][^>]*>.*?<span>(.*?)</span>',
+        raw,
+    )
+    if loc:
+        fields["location"] = (
+            html.unescape(re.sub(r"<[^>]+>", "", loc.group(1))).strip()[:120] or fields["location"]
+        )
+
+    chunks: list[str] = []
+    for pat in (
+        r'(?is)<div[^>]+id=["\']job-description["\'][^>]*>(.*?)</div>\s*</div>',
+        r'(?is)<section[^>]+id=["\']job-description["\'][^>]*>(.*?)</section>',
+        r'(?is)<div[^>]+class=["\'][^"\']*job-description[^"\']*["\'][^>]*>(.*?)</div>',
+    ):
+        m = re.search(pat, raw)
+        if m and len(m.group(1)) > 400:
+            chunks.append(_strip_html(m.group(1)))
+            break
+    body = chunks[0] if chunks else _strip_html(raw)
+    # Drop extreme nav chrome if we fell back to full page.
+    if not chunks and len(body) > 2500:
+        idx = body.lower().find("job description")
+        if idx > 0:
+            body = body[idx:]
+    return _clean_jd_text(body), fields
+
+
+def _workday_cxs_url(url: str) -> str | None:
+    """Map Workday job/apply URLs to the public CXS JSON endpoint."""
+    m = re.match(
+        r"(?i)^https?://([a-z0-9-]+)\.wd(\d+)\.myworkdayjobs\.com/"
+        r"(?:en-US/)?"
+        r"([^/]+)/job/(.+?)(?:/apply)?/?$",
+        (url or "").strip(),
+    )
+    if not m:
+        return None
+    tenant, wd_n, site, path = m.group(1), m.group(2), m.group(3), m.group(4)
+    path = path.split("?")[0].rstrip("/")
+    return f"https://{tenant}.wd{wd_n}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/job/{path}"
+
+
+def _find_workday_job_url(html_text: str) -> str | None:
+    for u in re.findall(
+        r"https?://[a-z0-9-]+\.wd\d+\.myworkdayjobs\.com/[^\"'\s>]+/job/[^\"'\s>]+",
+        html_text,
+        flags=re.I,
+    ):
+        u = html.unescape(u).split("?")[0].rstrip("/")
+        if u.lower().endswith("/apply"):
+            u = u[: -len("/apply")]
+        return u
+    return None
+
+
+def _extract_docx_text(data: bytes) -> str:
+    with zipfile.ZipFile(BytesIO(data)) as zf:
+        xml = zf.read("word/document.xml")
+    root = ET.fromstring(xml)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    parts = [node.text for node in root.findall(".//w:t", ns) if node.text]
+    return "\n".join(parts).strip()
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    # Minimal best-effort PDF text scrape without extra dependencies.
+    out: list[str] = []
+    for m in re.finditer(rb"\((?:\\.|[^\\)]){1,200}\)", data):
+        chunk = m.group(0)[1:-1]
+        s = chunk.decode("latin-1", errors="ignore")
+        s = s.replace("\\n", "\n").replace("\\r", "").replace("\\t", " ")
+        s = re.sub(r"\\[0-9]{1,3}", "", s)
+        if sum(c.isalnum() for c in s) >= 4:
+            out.append(s)
+    text = re.sub(r"\s+", " ", " ".join(out)).strip()
+    return text[:20000]
 
 
 def _guess_fields(jd_text: str, *, url: str = "", hints: dict[str, str] | None = None) -> dict[str, str]:
     hints = hints or {}
-    lines = [ln.strip() for ln in jd_text.splitlines() if ln.strip()]
-    title = hints.get("title") or (lines[0][:120] if lines else "")
     company = hints.get("company") or ""
+    title = hints.get("title") or ""
     location = hints.get("location") or ""
+    lines = [ln.strip() for ln in jd_text.splitlines() if ln.strip()]
+    for ln in lines[:40]:
+        m = re.search(r"(?i)^(?:job\s*title|title|position)\s*[:\-]\s*(.+)$", ln)
+        if m and not title:
+            title = m.group(1).strip()[:120]
+        m = re.search(r"(?i)^(?:company|employer|organization)\s*[:\-]\s*(.+)$", ln)
+        if m and not company:
+            company = m.group(1).strip()[:120]
+        m = re.search(r"(?i)^(?:location|based in)\s*[:\-]\s*(.+)$", ln)
+        if m and not location:
+            location = m.group(1).strip()[:120]
+    if not title:
+        for ln in lines[:12]:
+            low = ln.lower()
+            if low in _NOISE_TITLE_LINES or low.startswith("http"):
+                continue
+            if 3 <= len(ln) <= 120:
+                title = ln[:120]
+                break
     if not company:
         for ln in lines[:8]:
             if re.search(r"\b(inc|llc|corp|company|labs|cloud)\b", ln, re.I) and len(ln) < 80:
                 company = ln
                 break
+    if not company and url:
+        host = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+        base = host.split(".")[0]
+        if base.lower() not in {"careers", "jobs", "www", "apply"}:
+            company = base.replace("-", " ").title()
+        elif len(host.split(".")) >= 2:
+            company = host.split(".")[-2].replace("-", " ").title()
     if not location:
         for ln in lines[:12]:
             if re.search(r"\b(remote|hybrid|on-?site|,\s*[A-Z]{2})\b", ln, re.I):
                 location = ln[:120]
                 break
-    return {"title": title, "company": company, "location": location, "url": url}
+    return {"title": title, "company": company, "location": location}
 
 
 class CareerService:
@@ -256,10 +451,21 @@ class CareerService:
             raw = base64.b64decode(content_base64)
             source_filename = filename or "upload.bin"
             lower = source_filename.lower()
-            if lower.endswith((".html", ".htm")):
+            if lower.endswith(".docx"):
+                jd_text = _extract_docx_text(raw)
+            elif lower.endswith(".pdf"):
+                jd_text = _extract_pdf_text(raw)
+            elif lower.endswith((".html", ".htm")):
                 jd_text = _strip_html(raw.decode("utf-8", errors="replace"))
+            elif lower.endswith(".doc"):
+                # Binary .doc: best-effort text scrape of printable ASCII.
+                doc = raw.decode("latin-1", errors="ignore")
+                doc = re.sub(r"[^\x09\x0a\x0d\x20-\x7e]+", " ", doc)
+                jd_text = re.sub(r"\s+", " ", doc).strip()[:20000]
             else:
                 jd_text = raw.decode("utf-8", errors="replace")
+            if not jd_text.strip():
+                jd_text = f"[binary upload stored as {source_filename}; text extraction empty]"
 
         jd_text = _clean_jd_text(jd_text)
         fields = _guess_fields(jd_text, url=url or "", hints=hints)
@@ -309,49 +515,123 @@ class CareerService:
             raise RuntimeError(f"Application id conflicts with another vault: {app_id}") from exc
         return {"ok": True, "application": saved, "jdChars": len(jd_text)}
 
-    async def _fetch_url_text(self, fetch_url: str) -> tuple[str, dict[str, str]]:
-        from urllib.parse import urljoin
-
+    async def _safe_get(
+        self, client: httpx.AsyncClient, url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """GET ``url`` following redirects manually, re-checking SSRF on every hop."""
         from sprucer.ssrf import UnsafeUrlError, assert_public_http_url
 
-        headers = {"User-Agent": "Sprucer/0.1 (+https://github.com/Full-Stack-Boston/sprucer)"}
         try:
-            current = assert_public_http_url(fetch_url)
+            current = assert_public_http_url(url)
         except UnsafeUrlError as exc:
             raise RuntimeError(str(exc)) from exc
+        for _ in range(6):
+            try:
+                res = await client.get(current, headers=headers)
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"URL fetch failed: {exc}") from exc
+            if res.is_redirect:
+                loc = res.headers.get("location")
+                if not loc:
+                    raise RuntimeError("URL fetch redirect missing Location")
+                nxt = urljoin(str(res.url), loc)
+                try:
+                    current = assert_public_http_url(nxt)
+                except UnsafeUrlError as exc:
+                    raise RuntimeError(str(exc)) from exc
+                continue
+            return res
+        raise RuntimeError("URL fetch exceeded redirect limit")
 
+    async def _fetch_workday_cxs(
+        self, client: httpx.AsyncClient, job_url: str
+    ) -> tuple[str, dict[str, str]] | None:
+        """Fetch a Workday posting via its public CXS JSON endpoint (richer than the HTML shell)."""
+        cxs = _workday_cxs_url(job_url)
+        if not cxs:
+            return None
+        try:
+            res = await self._safe_get(
+                client, cxs, {"User-Agent": _BROWSER_UA, "Accept": "application/json"}
+            )
+        except RuntimeError:
+            return None
+        if res.status_code >= 400:
+            return None
+        try:
+            data = res.json()
+        except Exception:
+            return None
+        info = data.get("jobPostingInfo") or {}
+        title = str(info.get("title") or "").strip()
+        desc_html = str(info.get("jobDescription") or "")
+        location = str(info.get("location") or info.get("additionalLocations") or "").strip()
+        if isinstance(info.get("jobPostingLocation"), dict):
+            location = location or str(info["jobPostingLocation"].get("descriptor") or "").strip()
+        company = str(
+            info.get("hiringOrganization")
+            or (data.get("hiringOrganization") or {}).get("name")
+            or ""
+        ).strip()
+        body = _strip_html(desc_html) if desc_html else ""
+        if not body and not title:
+            return None
+        parts = [p for p in [title, location, body] if p]
+        return _clean_jd_text("\n\n".join(parts)), {
+            "company": company[:120],
+            "title": title[:120],
+            "location": location[:120],
+        }
+
+    async def _fetch_url_text(self, fetch_url: str) -> tuple[str, dict[str, str]]:
+        headers = {
+            "User-Agent": _BROWSER_UA,
+            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
         # Manual redirect following so each hop is re-checked (SSRF).
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=False, trust_env=False) as client:
-            res: httpx.Response | None = None
-            for _ in range(6):
-                try:
-                    res = await client.get(current, headers=headers)
-                except httpx.RequestError as exc:
-                    raise RuntimeError(f"URL fetch failed: {exc}") from exc
-                if res.is_redirect:
-                    loc = res.headers.get("location")
-                    if not loc:
-                        raise RuntimeError("URL fetch redirect missing Location")
-                    nxt = urljoin(str(res.url), loc)
-                    try:
-                        current = assert_public_http_url(nxt)
-                    except UnsafeUrlError as exc:
-                        raise RuntimeError(str(exc)) from exc
-                    continue
-                break
-            else:
-                raise RuntimeError("URL fetch exceeded redirect limit")
-            assert res is not None
+            # Direct Workday job URL -> CXS JSON (richer than the HTML apply shell).
+            if "myworkdayjobs.com" in fetch_url.lower():
+                wd = await self._fetch_workday_cxs(client, fetch_url)
+                if wd:
+                    return wd
+
+            res = await self._safe_get(client, fetch_url, headers)
             if res.status_code in {401, 403}:
                 raise RuntimeError(
                     f"Job site returned HTTP {res.status_code}. Paste the JD text or upload a file instead."
                 )
             if res.status_code >= 400:
                 raise RuntimeError(f"URL fetch HTTP {res.status_code}")
+
             ctype = (res.headers.get("content-type") or "").lower()
+            if "pdf" in ctype or fetch_url.lower().split("?")[0].endswith(".pdf"):
+                return _clean_jd_text(_extract_pdf_text(res.content)), {}
+
             body = res.text
+            if "json" in ctype:
+                try:
+                    data = res.json()
+                except Exception:
+                    data = None
+                if isinstance(data, dict) and data.get("jobPostingInfo"):
+                    info = data["jobPostingInfo"]
+                    desc = _strip_html(str(info.get("jobDescription") or ""))
+                    title = str(info.get("title") or "")
+                    text = _clean_jd_text("\n\n".join(p for p in [title, desc] if p))
+                    return text, {"title": title[:120]}
+                return _clean_jd_text(body), {}
+
             if "html" in ctype or "<html" in body[:500].lower():
-                return _clean_jd_text(_strip_html(body)), {}
+                # Prefer an embedded Workday apply link -> CXS when present.
+                wd_job = _find_workday_job_url(body)
+                if wd_job:
+                    wd = await self._fetch_workday_cxs(client, wd_job)
+                    if wd and len(wd[0]) > 400:
+                        return wd
+                return _extract_html_jd(body)
+
             return _clean_jd_text(body), {}
 
     def _normalize_types(self, types: list[str] | None, custom_type: str | None) -> list[str]:

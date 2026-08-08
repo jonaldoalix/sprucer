@@ -9,7 +9,7 @@ Sprucer does **not** invent employers, dates, degrees, or metrics. Generations s
 ## Features
 
 - **Knowledge bank** — structured career truth (experience, projects, metrics, blurbs, signature stories, never-claim) plus profile and voice prefs
-- **JD ingest** — paste, URL fetch (SSRF-guarded), or upload
+- **JD ingest** — paste, URL fetch (SSRF-guarded, with Workday CXS JSON + HTML hero/`job-description` extraction and company/title/location hints), or upload (`.txt`/`.md`/`.html`/`.pdf`/`.docx`/`.doc`)
 - **Generate** — cover letter, resume sections, email, interview prep, LinkedIn, custom types — grounded in your vault
 - **Application tracker** — per-job status, notes, generation history
 - **Document review** — draft → approve preview flow

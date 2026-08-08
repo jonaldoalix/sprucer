@@ -15,7 +15,7 @@ Sprucer is alpha (`0.1.x`). Security fixes land on `main`.
 - Auth modes: `dev` (local), `api_key`, `oidc`, `none`
 - Refuses `dev`/`none` on non-loopback binds unless `SPRUCER_ALLOW_INSECURE_DEV=1`
 - Session cookies: `HttpOnly`, `SameSite=Lax`, optional `Secure` via `SPRUCER_COOKIE_SECURE`
-- JD URL ingest: http(s) only, blocks loopback/private/link-local/metadata, re-checks redirects
+- JD URL ingest: http(s) only, blocks loopback/private/link-local/metadata, re-checks every redirect hop (including Workday CXS follow-ups and links extracted from fetched pages)
 - Optional disable of `/docs` via `SPRUCER_DOCS_ENABLED=0`
 - Dev Bearer auth accepts HMAC session tokens only (not the raw password)
 

@@ -1,4 +1,4 @@
-"""Close the last uncovered statement gaps for a 100% gate."""
+"""Close residual coverage gaps for the CI coverage gate."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def test_sqlalchemy_migrate_and_list_generations(tmp_path: Path):
         insp.return_value.get_columns.return_value = [{"name": "id"}, {"name": "content"}]
         with patch.object(store.engine, "begin", return_value=begin_cm):
             store._ensure_generation_duration_column()
-    assert mock_conn.execute.called
+    assert mock_conn.exec_driver_sql.called
 
     with patch.object(store_mod, "inspect", side_effect=RuntimeError("boom")):
         store._ensure_generation_duration_column()

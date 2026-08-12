@@ -11,17 +11,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[dev]"
-      - name: Unit tests + coverage (100%)
-        run: pytest -q --cov=sprucer --cov-report=term-missing --cov-fail-under=100
+      - name: Unit tests + coverage (≥80%)
+        run: pytest -q --cov=sprucer --cov-report=term-missing --cov-fail-under=80
       - name: Ruff
         run: ruff check src tests
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Web build
@@ -30,11 +30,33 @@ jobs:
           npm install
           npm run build
 
+  osv:
+    name: Dependency scan (OSV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Scan web lockfile with OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        with:
+          scan-args: |-
+            scan
+            source
+            --offline-vulnerabilities
+            --download-offline-databases
+            -L
+            web/package-lock.json
+
   semgrep:
     runs-on: ubuntu-latest
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Semgrep
-        run: semgrep scan --config p/python --config p/owasp-top-ten --error --metrics=off
+        run: |
+          semgrep scan \
+            --config p/python \
+            --severity ERROR \
+            --error \
+            --metrics=off

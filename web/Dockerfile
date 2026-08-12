@@ -14,9 +14,12 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+RUN addgroup -S sprucer && adduser -S sprucer -G sprucer
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+RUN chown -R sprucer:sprucer /app
+USER sprucer
 EXPOSE 3737
 ENV PORT=3737
 CMD ["node", "server.js"]

@@ -1,10 +1,12 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+RUN useradd -m -u 1000 sprucer
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 COPY fixtures ./fixtures
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . && chown -R sprucer:sprucer /app
+USER sprucer
 
 ENV SPRUCER_HOST=0.0.0.0
 ENV SPRUCER_PORT=8787

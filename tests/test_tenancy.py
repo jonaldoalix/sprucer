@@ -75,7 +75,7 @@ def test_owner_subject_migration(tmp_path: Path):
         insp.return_value.get_columns.return_value = [{"name": "id"}, {"name": "document"}]
         with patch.object(store.engine, "begin", return_value=begin_cm):
             store._ensure_owner_subject_columns()
-    assert mock_conn.execute.call_count >= 1
+    assert mock_conn.exec_driver_sql.call_count >= 1
 
     with patch.object(store_mod, "inspect", side_effect=RuntimeError("boom")):
         store._ensure_owner_subject_columns()

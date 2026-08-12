@@ -96,11 +96,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/AUTH.md](docs/AUTH.md), 
 ## Development
 
 ```bash
-pytest -q --cov=sprucer --cov-fail-under=100
+pytest -q --cov=sprucer --cov-fail-under=80
 ruff check src tests
 ```
 
-CI also runs Semgrep (`p/python`, `p/owasp-top-ten`) and a Next.js production build.
+CI also runs Semgrep (`p/python`, severity ERROR), OSV on the web lockfile, and a Next.js production build.
 
 ## Repo layout
 

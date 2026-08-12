@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, select, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from sprucer.tenancy import SHARED_OWNER
@@ -124,7 +124,9 @@ class SqlAlchemyStorage:
         if "duration_ms" in cols:
             return
         with self.engine.begin() as conn:
-            conn.execute(text("ALTER TABLE generations ADD COLUMN duration_ms INTEGER"))
+            conn.exec_driver_sql(
+                "ALTER TABLE generations ADD COLUMN duration_ms INTEGER"
+            )
 
     def _ensure_owner_subject_columns(self) -> None:
         """Add owner_subject to legacy DBs and backfill to shared."""
@@ -136,11 +138,12 @@ class SqlAlchemyStorage:
             if "owner_subject" in cols:
                 continue
             with self.engine.begin() as conn:
-                conn.execute(
-                    text(
-                        f"ALTER TABLE {table} ADD COLUMN owner_subject "
-                        f"VARCHAR(200) NOT NULL DEFAULT '{SHARED_OWNER}'"
-                    )
+                # Fixed allowlist only — not user input. Prefer exec_driver_sql over text().
+                if table not in ("truth", "applications"):
+                    raise RuntimeError(f"unexpected migration table: {table}")
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN owner_subject "
+                    f"VARCHAR(200) NOT NULL DEFAULT '{SHARED_OWNER}'"
                 )
 
     def get_truth(self, owner: str = SHARED_OWNER) -> dict[str, Any]:

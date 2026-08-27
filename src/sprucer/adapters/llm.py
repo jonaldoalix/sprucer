@@ -106,6 +106,79 @@ class MockLlm:
                         cite_ids.append(str(row["id"]))
         if not types:
             types = ["cover", "email"]
+        # Career-fit interview (IDEA-16) — JSON contracts for turn / recommend.
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+            raw = msg.get("content") or ""
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            fit_mode = str(payload.get("fitMode") or "")
+            if fit_mode == "turn":
+                transcript = payload.get("transcript") or []
+                user_turns = [
+                    m
+                    for m in transcript
+                    if isinstance(m, dict) and m.get("role") == "user"
+                ]
+                ready = len(user_turns) >= 2
+                return json.dumps(
+                    {
+                        "assistantMessage": (
+                            "Thanks — that helps. What work style fits you best "
+                            "(deep focus vs frequent collaboration), and any geo or remote limits?"
+                            if not ready
+                            else "I have enough to draft ranked industries and titles. "
+                            "Say when to recommend, or add one more constraint."
+                        ),
+                        "readyForRecommend": ready,
+                    },
+                    ensure_ascii=True,
+                )
+            if fit_mode == "recommend":
+                spectrum = {}
+                vault = payload.get("vaultSummary") if isinstance(payload.get("vaultSummary"), dict) else {}
+                if isinstance(vault.get("roleSpectrum"), dict):
+                    spectrum = vault["roleSpectrum"]
+                summary = str(spectrum.get("summary") or "platform and reliability work")
+                return json.dumps(
+                    {
+                        "industries": [
+                            {
+                                "name": "Cloud infrastructure / DevOps tooling",
+                                "rank": 1,
+                                "rationale": f"Grounded in vault spectrum: {summary[:120]}",
+                            },
+                            {
+                                "name": "SaaS developer platform",
+                                "rank": 2,
+                                "rationale": "Matches ownership of reliability and developer experience.",
+                            },
+                        ],
+                        "titles": [
+                            {
+                                "name": "Platform Engineer",
+                                "rank": 1,
+                                "rationale": "Aligns with spectrum preference for platform ownership.",
+                                "industry": "Cloud infrastructure / DevOps tooling",
+                            },
+                            {
+                                "name": "SRE / Reliability Engineer",
+                                "rank": 2,
+                                "rationale": "Reliability ownership called out in vault summary.",
+                                "industry": "Cloud infrastructure / DevOps tooling",
+                            },
+                        ],
+                        "constraints": {"geo": "", "remote": "flexible", "other": ""},
+                        "confidence": "medium",
+                        "notes": "Draft only until you accept into careerFit.",
+                    },
+                    ensure_ascii=True,
+                )
         while len(cite_ids) < 3:
             cite_ids.append(f"fixture-cite-{len(cite_ids)+1}")
         c0, c1, c2 = cite_ids[0], cite_ids[1], cite_ids[2]

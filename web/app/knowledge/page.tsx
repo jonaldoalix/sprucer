@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useId, useState } from "react";
+import Link from "next/link";
 import { RequireAuth } from "@/components/RequireAuth";
 import { TrashIcon } from "@/components/TrashIcon";
 import { apiFetch } from "@/lib/api";
@@ -25,6 +26,13 @@ type Truth = {
   neverClaim?: string[];
   experience?: Exp[];
   signatureStories?: Story[];
+  careerFit?: {
+    industries?: { name?: string; rank?: number; rationale?: string }[];
+    titles?: { name?: string; rank?: number; rationale?: string; industry?: string }[];
+    confidence?: string;
+    notes?: string;
+    acceptedAt?: string;
+  };
 };
 
 export default function KnowledgePage() {
@@ -234,6 +242,37 @@ function KnowledgeDesk() {
       </section>
 
       {error ? <p className="error">{error}</p> : null}
+
+      {(truth?.careerFit?.industries || []).length ? (
+        <section className="panel fit-accepted">
+          <div className="panel-title">
+            <h2>Accepted career fit</h2>
+            <span className="muted">
+              from interview · edit via <Link href="/fit">Career fit</Link>
+            </span>
+          </div>
+          <p className="panel-lead">
+            Confidence {truth?.careerFit?.confidence || "medium"}
+            {truth?.careerFit?.acceptedAt ? ` · accepted ${truth.careerFit.acceptedAt}` : ""}.
+          </p>
+          <ul className="list">
+            {(truth?.careerFit?.industries || []).map((i) => (
+              <li key={`ind-${i.rank}-${i.name}`}>
+                Industry #{i.rank}: {i.name}
+                {i.rationale ? ` — ${i.rationale}` : ""}
+              </li>
+            ))}
+            {(truth?.careerFit?.titles || []).map((t) => (
+              <li key={`title-${t.rank}-${t.name}`}>
+                Title #{t.rank}: {t.name}
+                {t.industry ? ` (${t.industry})` : ""}
+                {t.rationale ? ` — ${t.rationale}` : ""}
+              </li>
+            ))}
+          </ul>
+          {truth?.careerFit?.notes ? <p className="muted">{truth.careerFit.notes}</p> : null}
+        </section>
+      ) : null}
 
       <div className="stack workbench">
         <div className="howto">

@@ -11,6 +11,7 @@
 
 ## Done recently
 
+- [x] Career-fit interview (IDEA-16): `/fit` UI + `/v1/fit/*` start/turn/recommend/accept; `truth.careerFit` draft-until-accept; industries + titles; live LLM / BYOK only (not offline DemoLlm); real JDs remain Applications ingest (documented stretch)
 - [x] Self-contained demo mode (`SPRUCER_DEMO=1`, `deploy/compose.demo.yml`): offline `DemoLlm` generator (no external LLM/cost), anonymous per-session ephemeral vaults with TTL sweep, auto-seeded sample vault, outbound URL ingest disabled
 - [x] Demo start gate: first-run chooser between the offline generator (simulated) and bring-your-own-AI (prompts for ephemeral creds, Test connection via `/v1/llm/probe`, then unlocks real generation), plus a status strip to change setup
 - [x] Dockge demo compose (`compose.demo.yaml`) for fsb-03 / sprucer.fullstackboston.com (Tailscale :8096)

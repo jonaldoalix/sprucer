@@ -11,7 +11,8 @@ Versioned JSON document stored by the storage adapter. Fixtures ship a synthetic
 | `profile` | object | name, contact, links |
 | `headline` | string | Short accurate headline |
 | `voice` | object | person, tone, punctuation prefs |
-| `roleSpectrum` | object | What work you want (not rigid titles) |
+| `roleSpectrum` | object | What work you want (not rigid titles) — short generation dial |
+| `careerFit` | object | Accepted career-fit prefs from the interview (draft until accept) |
 | `education` | object | Degree facts you will defend |
 | `experience` | list | org, role, dates, points |
 | `projects` | list | Optional project entries |
@@ -34,3 +35,19 @@ API `PATCH /v1/truth` supports:
 | `set` | Replace a whole section |
 
 List sections: `signatureStories`, `blurbs`, `metrics`, `experience`, `projects`, `neverClaim`.
+
+## `careerFit` (accepted interview result)
+
+Written only via `POST /v1/fit/accept` with `confirm=true` (or equivalent `PATCH /v1/truth` `op=set` if you paste a previously accepted block). Draft recommendations stay on the fit session until accept.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `industries` | list | `{name, rank, rationale}` — required when accepting |
+| `titles` | list | `{name, rank, rationale, industry?}` role families |
+| `constraints` | object | `geo`, `remote`, `other` |
+| `confidence` | string | `low` \| `medium` \| `high` |
+| `notes` | string | Freeform caveats |
+| `acceptedAt` | ISO-8601 | Set on accept |
+| `sourceSessionId` | string | Fit session id |
+
+See [FIT_INTERVIEW.md](FIT_INTERVIEW.md). Do not store fabricated employers or job URLs here.

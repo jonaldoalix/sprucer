@@ -7,6 +7,7 @@ import { apiFetch } from "@/lib/api";
 
 const pageLinks = [
   { href: "/applications", label: "Applications" },
+  { href: "/fit", label: "Career fit" },
   { href: "/knowledge", label: "Knowledge" },
 ];
 

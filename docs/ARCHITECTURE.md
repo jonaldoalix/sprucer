@@ -17,7 +17,9 @@ Domain code never opens files or SQL directly. Generate always sends:
 
 ## Default storage (SQLite)
 
-Tables hold truth (JSON document), applications, JD text, and generations. Postgres uses the same schema via SQLAlchemy.
+Tables hold truth (JSON document), applications, JD text, generations, and fit interview sessions. Postgres uses the same schema via SQLAlchemy.
+
+Career-fit interview (`/v1/fit/*`, UI `/fit`) is a separate multi-turn flow from JD materials generate; see [FIT_INTERVIEW.md](FIT_INTERVIEW.md).
 
 ## Filesystem vault (lab / migration only)
 

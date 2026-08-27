@@ -81,6 +81,37 @@ class DeleteGenerationBody(BaseModel):
     confirm: bool = False
 
 
+class FitTurnBody(BaseModel):
+    session_id: str
+    message: str
+
+
+class FitSessionBody(BaseModel):
+    session_id: str
+
+
+class FitAcceptBody(BaseModel):
+    session_id: str
+    confirm: bool = False
+    update_role_spectrum: bool = True
+
+
+def _byok_override(request: Request, settings: Settings):
+    if not settings.byok_enabled:
+        return None
+    base = request.headers.get("x-llm-base-url")
+    key = request.headers.get("x-llm-api-key")
+    model = request.headers.get("x-llm-model")
+    if not (base or key):
+        return None
+    return make_byok_llm(
+        base_url=base or "",
+        api_key=key or "",
+        model=model or None,
+        allowed_hosts=settings.byok_allowed_host_set() or None,
+    )
+
+
 def build_app(
     *,
     settings: Settings | None = None,
@@ -344,22 +375,10 @@ def build_app(
         ctx: AuthContext = Depends(require_auth),
         service: CareerService = Depends(svc),
     ):
-        llm_override = None
-        settings = app.state.settings
-        if settings.byok_enabled:
-            base = request.headers.get("x-llm-base-url")
-            key = request.headers.get("x-llm-api-key")
-            model = request.headers.get("x-llm-model")
-            if base or key:
-                try:
-                    llm_override = make_byok_llm(
-                        base_url=base or "",
-                        api_key=key or "",
-                        model=model or None,
-                        allowed_hosts=settings.byok_allowed_host_set() or None,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            llm_override = _byok_override(request, app.state.settings)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             return await service.generate(
                 application_id=payload.application_id,
@@ -367,6 +386,91 @@ def build_app(
                 custom_type=payload.custom_type,
                 owner=owner_for(ctx),
                 llm_override=llm_override,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/fit/sessions")
+    def fit_list(
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        return service.fit_list(owner=owner_for(ctx))
+
+    @app.post("/v1/fit/start")
+    def fit_start(
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            return service.fit_start(owner=owner_for(ctx))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/fit/sessions/{session_id}")
+    def fit_get(
+        session_id: str,
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            return service.fit_get(session_id=session_id, owner=owner_for(ctx))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/v1/fit/turn")
+    async def fit_turn(
+        payload: FitTurnBody,
+        request: Request,
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            llm_override = _byok_override(request, app.state.settings)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return await service.fit_turn(
+                session_id=payload.session_id,
+                message=payload.message,
+                owner=owner_for(ctx),
+                llm_override=llm_override,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/fit/recommend")
+    async def fit_recommend(
+        payload: FitSessionBody,
+        request: Request,
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            llm_override = _byok_override(request, app.state.settings)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return await service.fit_recommend(
+                session_id=payload.session_id,
+                owner=owner_for(ctx),
+                llm_override=llm_override,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/fit/accept")
+    def fit_accept(
+        payload: FitAcceptBody,
+        ctx: AuthContext = Depends(require_auth),
+        service: CareerService = Depends(svc),
+    ):
+        try:
+            return service.fit_accept(
+                session_id=payload.session_id,
+                confirm=payload.confirm,
+                update_role_spectrum=payload.update_role_spectrum,
+                owner=owner_for(ctx),
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

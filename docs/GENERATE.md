@@ -42,6 +42,10 @@ Intended use: a practice cheat-sheet for **this** JD.
 
 Do not invent Epic/HIPAA/employer claims absent from the vault; bridge transferable experience honestly instead.
 
+## Career-fit interview (not this artifact)
+
+Discovering industries / titles is a separate flow: [FIT_INTERVIEW.md](FIT_INTERVIEW.md) (`/v1/fit/*`, UI `/fit`). Do not confuse it with the `interview` artifact type above.
+
 ## Persistence
 
 Generations save with `approval=draft`. Approve requires `confirm=true`.

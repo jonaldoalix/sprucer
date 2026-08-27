@@ -29,9 +29,12 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   if (!headers.has("Content-Type") && init.body) {
     headers.set("Content-Type", "application/json");
   }
-  // Bring-your-own-key: forward the visitor's own provider on generate calls only.
+  // Bring-your-own-key: forward the visitor's own provider on generate and fit calls.
   // Credentials live in the browser (localStorage) and are never persisted server-side.
-  if (typeof window !== "undefined" && path === "/v1/generate") {
+  if (
+    typeof window !== "undefined" &&
+    (path === "/v1/generate" || path.startsWith("/v1/fit/"))
+  ) {
     const base = window.localStorage.getItem(BYOK_KEYS.base) || "";
     const key = window.localStorage.getItem(BYOK_KEYS.key) || "";
     const model = window.localStorage.getItem(BYOK_KEYS.model) || "";

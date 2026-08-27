@@ -75,6 +75,20 @@ class GenerationRow(Base):
     application: Mapped[ApplicationRow] = relationship(back_populates="generations")
 
 
+class FitSessionRow(Base):
+    """Career-fit interview session (draft until accept writes truth.careerFit)."""
+
+    __tablename__ = "fit_sessions"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_subject: Mapped[str] = mapped_column(String(200), nullable=False, index=True, default=SHARED_OWNER)
+    status: Mapped[str] = mapped_column(String(40), default="interviewing")
+    mode: Mapped[str] = mapped_column(String(40), default="inquire")
+    document: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 EMPTY_TRUTH: dict[str, Any] = {
     "version": 1,
     "updatedAt": "",
@@ -82,6 +96,7 @@ EMPTY_TRUTH: dict[str, Any] = {
     "headline": "",
     "voice": {"person": "first", "tone": "professional_not_bland", "punctuation": "keyboard_only"},
     "roleSpectrum": {},
+    "careerFit": {},
     "education": {},
     "experience": [],
     "projects": [],
@@ -309,6 +324,14 @@ class SqlAlchemyStorage:
             for row in truths:
                 session.delete(row)
                 purged += 1
+            fits = session.scalars(
+                select(FitSessionRow).where(
+                    FitSessionRow.owner_subject.like(like, escape="\\"),
+                    FitSessionRow.updated_at < older_than,
+                )
+            ).all()
+            for row in fits:
+                session.delete(row)
             session.commit()
         return purged
 
@@ -430,6 +453,81 @@ class SqlAlchemyStorage:
             session.delete(row)
             app.updated_at = _now()
             session.commit()
+
+    def _fit_dict(self, row: FitSessionRow) -> dict[str, Any]:
+        try:
+            doc = json.loads(row.document or "{}")
+        except Exception:
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        return {
+            "id": row.id,
+            "status": row.status,
+            "mode": row.mode,
+            "createdAt": _iso(row.created_at),
+            "updatedAt": _iso(row.updated_at),
+            **doc,
+        }
+
+    def get_fit_session(self, session_id: str, owner: str = SHARED_OWNER) -> dict[str, Any] | None:
+        owner = owner or SHARED_OWNER
+        with self._Session() as session:
+            row = session.get(FitSessionRow, session_id)
+            if row is None or row.owner_subject != owner:
+                return None
+            return self._fit_dict(row)
+
+    def save_fit_session(
+        self, session_id: str, payload: dict[str, Any], *, owner: str = SHARED_OWNER
+    ) -> dict[str, Any]:
+        owner = owner or SHARED_OWNER
+        payload = dict(payload)
+        status = str(payload.get("status") or "interviewing")
+        mode = str(payload.get("mode") or "inquire")
+        # Persist mutable fields in document; id/status/mode also mirrored on columns.
+        doc = {
+            k: v
+            for k, v in payload.items()
+            if k not in ("id", "createdAt", "updatedAt")
+        }
+        doc["status"] = status
+        doc["mode"] = mode
+        with self._Session() as session:
+            row = session.get(FitSessionRow, session_id)
+            now = _now()
+            if row is None:
+                row = FitSessionRow(
+                    id=session_id,
+                    owner_subject=owner,
+                    status=status,
+                    mode=mode,
+                    document=json.dumps(doc, ensure_ascii=True),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                if row.owner_subject != owner:
+                    raise KeyError(session_id)
+                row.status = status
+                row.mode = mode
+                row.document = json.dumps(doc, ensure_ascii=True)
+                row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return self._fit_dict(row)
+
+    def list_fit_sessions(self, owner: str = SHARED_OWNER, *, limit: int = 20) -> list[dict[str, Any]]:
+        owner = owner or SHARED_OWNER
+        with self._Session() as session:
+            rows = session.scalars(
+                select(FitSessionRow)
+                .where(FitSessionRow.owner_subject == owner)
+                .order_by(FitSessionRow.updated_at.desc())
+                .limit(max(1, min(limit, 100)))
+            ).all()
+            return [self._fit_dict(r) for r in rows]
 
 
 def create_storage(database_url: str) -> SqlAlchemyStorage:

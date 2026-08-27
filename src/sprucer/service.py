@@ -15,7 +15,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from sprucer.adapters.llm import LlmAdapter
+from sprucer.adapters.llm import DemoLlm, LlmAdapter
 from sprucer.adapters.storage.sqlalchemy_store import SqlAlchemyStorage
 from sprucer.tenancy import SHARED_OWNER, owner_key
 
@@ -1183,3 +1183,394 @@ class CareerService:
         if found is None:
             raise RuntimeError(f"generation not found: {generation_id}")
         return {"ok": True, "generation": found, "content": found.get("content") or ""}
+
+    # --- Career-fit interview (IDEA-16) ---
+
+    def _fit_llm(self, llm_override: LlmAdapter | None) -> LlmAdapter:
+        llm = llm_override or self.llm
+        if isinstance(llm, DemoLlm):
+            raise RuntimeError(
+                "Career-fit interview needs a live LLM. "
+                "Configure SPRUCER_LLM_* or bring your own AI (BYOK) — "
+                "offline demo generator cannot run this flow."
+            )
+        return llm
+
+    @staticmethod
+    def _fit_vault_summary(truth: dict[str, Any]) -> dict[str, Any]:
+        spectrum = truth.get("roleSpectrum") if isinstance(truth.get("roleSpectrum"), dict) else {}
+        career_fit = truth.get("careerFit") if isinstance(truth.get("careerFit"), dict) else {}
+        skills = truth.get("skills") if isinstance(truth.get("skills"), dict) else {}
+        skill_groups = {
+            k: [str(x) for x in (v or [])[:8]]
+            for k, v in skills.items()
+            if isinstance(v, list)
+        }
+        experience_roles: list[str] = []
+        for exp in truth.get("experience") or []:
+            if not isinstance(exp, dict):
+                continue
+            role = str(exp.get("role") or "").strip()
+            org = str(exp.get("org") or "").strip()
+            line = " at ".join(p for p in (role, org) if p)
+            if line:
+                experience_roles.append(line)
+        return {
+            "headline": str(truth.get("headline") or ""),
+            "roleSpectrum": {
+                "summary": str(spectrum.get("summary") or ""),
+                "preferSenior": spectrum.get("preferSenior"),
+                "titleNamesIrrelevant": spectrum.get("titleNamesIrrelevant"),
+            },
+            "careerFit": career_fit or {},
+            "skills": skill_groups,
+            "experienceRoles": experience_roles[:8],
+            "neverClaim": [str(x) for x in (truth.get("neverClaim") or [])[:12]],
+        }
+
+    @staticmethod
+    def _fit_has_existing_prefs(summary: dict[str, Any]) -> bool:
+        career_fit = summary.get("careerFit") if isinstance(summary.get("careerFit"), dict) else {}
+        industries = career_fit.get("industries") if isinstance(career_fit.get("industries"), list) else []
+        titles = career_fit.get("titles") if isinstance(career_fit.get("titles"), list) else []
+        if industries or titles:
+            return True
+        spectrum = summary.get("roleSpectrum") if isinstance(summary.get("roleSpectrum"), dict) else {}
+        return bool(str(spectrum.get("summary") or "").strip())
+
+    @staticmethod
+    def _fit_opening_message(*, mode: str, summary: dict[str, Any]) -> str:
+        if mode == "confirm":
+            career_fit = summary.get("careerFit") if isinstance(summary.get("careerFit"), dict) else {}
+            spectrum = summary.get("roleSpectrum") if isinstance(summary.get("roleSpectrum"), dict) else {}
+            lines = [
+                "I already see career-fit prefs in your knowledge bank. "
+                "Please confirm, correct, or retire anything that is stale before I recommend industries and titles.",
+                "",
+            ]
+            industries = career_fit.get("industries") if isinstance(career_fit.get("industries"), list) else []
+            if industries:
+                names = [
+                    str(i.get("name") or i)
+                    for i in industries
+                    if isinstance(i, (dict, str))
+                ]
+                lines.append("Accepted industries: " + ", ".join(n for n in names if n) + ".")
+            titles = career_fit.get("titles") if isinstance(career_fit.get("titles"), list) else []
+            if titles:
+                names = [
+                    str(t.get("name") or t)
+                    for t in titles
+                    if isinstance(t, (dict, str))
+                ]
+                lines.append("Accepted titles / role families: " + ", ".join(n for n in names if n) + ".")
+            spectrum_summary = str(spectrum.get("summary") or "").strip()
+            if spectrum_summary:
+                lines.append(f"Role spectrum summary: {spectrum_summary}")
+            if not industries and not titles and spectrum_summary:
+                lines.append(
+                    "(No accepted careerFit block yet — only roleSpectrum. "
+                    "Tell me what still holds and what to change.)"
+                )
+            lines.append("")
+            lines.append(
+                "Reply with confirmations and corrections. "
+                "When you are ready for ranked industries and titles, say so."
+            )
+            return "\n".join(lines)
+        return (
+            "I do not see enough career-fit data yet, so I will inquire thoroughly.\n\n"
+            "What kinds of problems, domains, or industries energize you at work — "
+            "and what drains you? Include constraints (geo, remote, seniority, schedule) if you have them."
+        )
+
+    @staticmethod
+    def _parse_json_object(raw: str) -> dict[str, Any]:
+        text = (raw or "").strip()
+        if not text:
+            raise RuntimeError("LLM returned an empty career-fit response")
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+        if fence:
+            data = json.loads(fence.group(1))
+            if isinstance(data, dict):
+                return data
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, dict):
+                return data
+        raise RuntimeError("LLM career-fit response was not valid JSON")
+
+    @staticmethod
+    def _normalize_ranked_items(raw: Any, *, require_name: bool = True) -> list[dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for idx, item in enumerate(raw):
+            if isinstance(item, str):
+                name = item.strip()
+                if not name:
+                    continue
+                out.append({"name": name, "rank": idx + 1, "rationale": ""})
+                continue
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("title") or item.get("industry") or "").strip()
+            if require_name and not name:
+                continue
+            entry: dict[str, Any] = {
+                "name": name,
+                "rank": int(item.get("rank") or idx + 1),
+                "rationale": str(item.get("rationale") or item.get("reason") or "").strip(),
+            }
+            industry = str(item.get("industry") or "").strip()
+            if industry:
+                entry["industry"] = industry
+            out.append(entry)
+        out.sort(key=lambda r: int(r.get("rank") or 999))
+        for i, row in enumerate(out):
+            row["rank"] = i + 1
+        return out
+
+    def _normalize_fit_draft(self, data: dict[str, Any]) -> dict[str, Any]:
+        industries = self._normalize_ranked_items(data.get("industries"))
+        titles = self._normalize_ranked_items(data.get("titles"))
+        if not industries:
+            raise RuntimeError("career-fit draft must include at least one ranked industry")
+        constraints_raw = data.get("constraints") if isinstance(data.get("constraints"), dict) else {}
+        constraints = {
+            "geo": str(constraints_raw.get("geo") or "").strip(),
+            "remote": str(constraints_raw.get("remote") or "").strip(),
+            "other": str(constraints_raw.get("other") or "").strip(),
+        }
+        confidence = str(data.get("confidence") or "medium").strip().lower()
+        if confidence not in ("low", "medium", "high"):
+            confidence = "medium"
+        notes = str(data.get("notes") or "").strip()
+        banned = ("http://", "https://", "job posting", "hiring at")
+        for bucket in (industries, titles):
+            for row in bucket:
+                blob = f"{row.get('name')} {row.get('rationale')}".lower()
+                if any(b in blob for b in banned):
+                    raise RuntimeError(
+                        "career-fit recommendations must not invent employers or job postings; "
+                        "use industries and role families only"
+                    )
+        return {
+            "industries": industries,
+            "titles": titles,
+            "constraints": constraints,
+            "confidence": confidence,
+            "notes": notes,
+        }
+
+    def fit_list(self, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        sessions = self.store.list_fit_sessions(owner)
+        slim = [
+            {
+                "id": s.get("id"),
+                "status": s.get("status"),
+                "mode": s.get("mode"),
+                "createdAt": s.get("createdAt"),
+                "updatedAt": s.get("updatedAt"),
+                "hasDraft": bool(s.get("draft")),
+            }
+            for s in sessions
+        ]
+        return {"ok": True, "sessions": slim}
+
+    def fit_get(self, *, session_id: str, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        found = self.store.get_fit_session(session_id, owner)
+        if found is None:
+            raise RuntimeError(f"fit session not found: {session_id}")
+        return {"ok": True, "session": found}
+
+    def fit_start(self, *, owner: str = SHARED_OWNER) -> dict[str, Any]:
+        truth = self.store.get_truth(owner)
+        summary = self._fit_vault_summary(truth)
+        mode = "confirm" if self._fit_has_existing_prefs(summary) else "inquire"
+        opening = self._fit_opening_message(mode=mode, summary=summary)
+        session_id = f"fit-{uuid.uuid4().hex[:12]}"
+        payload = {
+            "status": "interviewing",
+            "mode": mode,
+            "messages": [{"role": "assistant", "content": opening}],
+            "vaultSummary": summary,
+            "draft": None,
+            "readyForRecommend": False,
+        }
+        saved = self.store.save_fit_session(session_id, payload, owner=owner)
+        return {"ok": True, "session": saved}
+
+    async def fit_turn(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        owner: str = SHARED_OWNER,
+        llm_override: LlmAdapter | None = None,
+    ) -> dict[str, Any]:
+        text = (message or "").strip()
+        if not text:
+            raise RuntimeError("message is required")
+        found = self.store.get_fit_session(session_id, owner)
+        if found is None:
+            raise RuntimeError(f"fit session not found: {session_id}")
+        if found.get("status") == "accepted":
+            raise RuntimeError("fit session already accepted; start a new interview to revise")
+        llm = self._fit_llm(llm_override)
+        messages = list(found.get("messages") or [])
+        messages.append({"role": "user", "content": text})
+        system = (
+            "You are Sprucer's career-fit interviewer. Truth-first: ground follow-ups in the vault "
+            "summary and prior answers. Never invent employers, job postings, salaries, or credentials. "
+            "Keyboard punctuation only (no em dashes). Ask one focused question at a time unless the "
+            "operator is clearly ready for recommendations. "
+            "Respond with JSON only: "
+            '{"assistantMessage":"...","readyForRecommend":false}'
+        )
+        user_payload = {
+            "fitMode": "turn",
+            "mode": found.get("mode"),
+            "vaultSummary": found.get("vaultSummary") or {},
+            "transcript": messages[-24:],
+        }
+        raw = await llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+            ],
+            max_tokens=900,
+            temperature=0.4,
+        )
+        parsed = self._parse_json_object(raw)
+        assistant = str(parsed.get("assistantMessage") or parsed.get("message") or "").strip()
+        if not assistant:
+            raise RuntimeError("LLM did not return assistantMessage for career-fit turn")
+        ready = bool(parsed.get("readyForRecommend"))
+        messages.append({"role": "assistant", "content": assistant})
+        found["messages"] = messages
+        found["readyForRecommend"] = ready
+        if found.get("status") == "draft":
+            found["status"] = "interviewing"
+        saved = self.store.save_fit_session(session_id, found, owner=owner)
+        return {"ok": True, "session": saved}
+
+    async def fit_recommend(
+        self,
+        *,
+        session_id: str,
+        owner: str = SHARED_OWNER,
+        llm_override: LlmAdapter | None = None,
+    ) -> dict[str, Any]:
+        found = self.store.get_fit_session(session_id, owner)
+        if found is None:
+            raise RuntimeError(f"fit session not found: {session_id}")
+        if found.get("status") == "accepted":
+            raise RuntimeError("fit session already accepted; start a new interview to revise")
+        messages = list(found.get("messages") or [])
+        if len([m for m in messages if m.get("role") == "user"]) < 1:
+            raise RuntimeError("answer at least one interview question before requesting recommendations")
+        llm = self._fit_llm(llm_override)
+        system = (
+            "You are Sprucer's career-fit recommender. Rank industries (required) and job titles / "
+            "role families (preferred) grounded ONLY in the interview transcript and vault summary. "
+            "Never invent employers, job board postings, URLs, or salaries. Admit low confidence when "
+            "evidence is thin. Keyboard punctuation only. "
+            "Respond with JSON only: "
+            '{"industries":[{"name":"...","rank":1,"rationale":"..."}],'
+            '"titles":[{"name":"...","rank":1,"rationale":"...","industry":"..."}],'
+            '"constraints":{"geo":"","remote":"","other":""},'
+            '"confidence":"low|medium|high","notes":"..."}'
+        )
+        user_payload = {
+            "fitMode": "recommend",
+            "mode": found.get("mode"),
+            "vaultSummary": found.get("vaultSummary") or {},
+            "transcript": messages,
+        }
+        raw = await llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+            ],
+            max_tokens=1600,
+            temperature=0.35,
+        )
+        draft = self._normalize_fit_draft(self._parse_json_object(raw))
+        found["draft"] = draft
+        found["status"] = "draft"
+        found["readyForRecommend"] = True
+        saved = self.store.save_fit_session(session_id, found, owner=owner)
+        return {"ok": True, "session": saved, "draft": draft}
+
+    def fit_accept(
+        self,
+        *,
+        session_id: str,
+        confirm: bool = False,
+        update_role_spectrum: bool = True,
+        owner: str = SHARED_OWNER,
+    ) -> dict[str, Any]:
+        if not confirm:
+            raise RuntimeError("confirm=true is required to accept career-fit into the knowledge bank")
+        found = self.store.get_fit_session(session_id, owner)
+        if found is None:
+            raise RuntimeError(f"fit session not found: {session_id}")
+        draft = found.get("draft")
+        if not isinstance(draft, dict) or not draft.get("industries"):
+            raise RuntimeError("no career-fit draft to accept; call recommend first")
+        accepted_at = _now()
+        career_fit = {
+            "industries": draft.get("industries") or [],
+            "titles": draft.get("titles") or [],
+            "constraints": draft.get("constraints") or {},
+            "confidence": draft.get("confidence") or "medium",
+            "notes": draft.get("notes") or "",
+            "acceptedAt": accepted_at,
+            "sourceSessionId": session_id,
+        }
+        truth = self.store.get_truth(owner)
+        truth["careerFit"] = career_fit
+        if update_role_spectrum:
+            industries = ", ".join(
+                str(i.get("name"))
+                for i in (career_fit.get("industries") or [])
+                if isinstance(i, dict) and i.get("name")
+            )
+            titles = ", ".join(
+                str(t.get("name"))
+                for t in (career_fit.get("titles") or [])[:5]
+                if isinstance(t, dict) and t.get("name")
+            )
+            bits = [p for p in (industries and f"Industries: {industries}", titles and f"Roles: {titles}") if p]
+            notes = str(career_fit.get("notes") or "").strip()
+            summary = ". ".join(bits)
+            if notes:
+                summary = f"{summary}. {notes}" if summary else notes
+            if summary:
+                spectrum = (
+                    dict(truth.get("roleSpectrum") or {})
+                    if isinstance(truth.get("roleSpectrum"), dict)
+                    else {}
+                )
+                spectrum["summary"] = summary[:500]
+                truth["roleSpectrum"] = spectrum
+        saved_truth = self.store.save_truth(truth, owner=owner)
+        found["status"] = "accepted"
+        found["acceptedAt"] = accepted_at
+        found["careerFit"] = career_fit
+        saved = self.store.save_fit_session(session_id, found, owner=owner)
+        return {
+            "ok": True,
+            "session": saved,
+            "careerFit": career_fit,
+            "truthVersion": saved_truth.get("version"),
+        }
